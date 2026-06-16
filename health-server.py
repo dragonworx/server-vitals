@@ -672,9 +672,11 @@ STATS_HTML = r"""<!doctype html>
     // y-axis grid. Full version on big panels; a sparse one on core graphs when
     // opts.yAxis is set (compact x-axis stays off — the window is shown above).
     if (!compact || showYAxis) {
-      // Aim for one gridline per ~34px so short panels don't crowd the labels.
-      const targetTicks = compact ? 3 : Math.max(2, Math.min(6, Math.round(PLOT_H / 34)));
-      const step = niceStep(range / targetTicks);
+      // Core graphs use even quarter ticks (0/25/50/75/100 on the fixed scale);
+      // full panels aim for one nice-rounded gridline per ~34px.
+      const step = compact
+        ? range / 4
+        : niceStep(range / Math.max(2, Math.min(6, Math.round(PLOT_H / 34))));
       const tickStart = Math.ceil(yMin / step) * step;
       for (let t = tickStart; t <= yMax + 1e-9; t += step) {
         const y = PAD_T + (1 - (t - yMin) / range) * PLOT_H;
