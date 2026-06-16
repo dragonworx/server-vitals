@@ -396,6 +396,7 @@ STATS_HTML = r"""<!doctype html>
   .panel > svg { flex: 1 1 auto; min-height: 0; }
   .grid { stroke: #20262d; stroke-width: 1; }
   .axis { fill: #6c7886; font-size: 10px; font-family: inherit; }
+  .axis.axis-mini { font-size: 9px; }
   .line-cpu  { stroke: #6ddc8a; }
   .line-mem  { stroke: #6db5dc; }
   .line-disk { stroke: #dcb86d; }
@@ -624,8 +625,9 @@ STATS_HTML = r"""<!doctype html>
 
   function render(svgId, ser, opts) {
     opts = opts || {};
-    const compact = !!opts.compact;  // small-multiple mode: no axes/peak labels
-    const PAD_L = compact ? 6 : BASE_PAD_L;
+    const compact = !!opts.compact;     // small-multiple mode: no peak labels / x-axis
+    const showYAxis = !!opts.yAxis;     // draw a minimal y-axis even when compact
+    const PAD_L = compact ? (showYAxis ? 26 : 6) : BASE_PAD_L;
     const PAD_R = compact ? 6 : BASE_PAD_R;
     const PAD_T = compact ? 4 : BASE_PAD_T;
     const PAD_B = compact ? 4 : BASE_PAD_B;
@@ -667,21 +669,23 @@ STATS_HTML = r"""<!doctype html>
     // Pin to a fixed scale (per-core graphs share 0..100 so they're comparable).
     if (opts.fixedMax != null) { yMin = 0; yMax = opts.fixedMax; range = yMax - yMin; }
 
-    // y-axis grid (skipped in compact small-multiple mode)
-    if (!compact) {
+    // y-axis grid. Full version on big panels; a sparse one on core graphs when
+    // opts.yAxis is set (compact x-axis stays off — the window is shown above).
+    if (!compact || showYAxis) {
       // Aim for one gridline per ~34px so short panels don't crowd the labels.
-      const targetTicks = Math.max(2, Math.min(6, Math.round(PLOT_H / 34)));
+      const targetTicks = compact ? 3 : Math.max(2, Math.min(6, Math.round(PLOT_H / 34)));
       const step = niceStep(range / targetTicks);
       const tickStart = Math.ceil(yMin / step) * step;
-      for (let t = tickStart; t <= yMax; t += step) {
+      for (let t = tickStart; t <= yMax + 1e-9; t += step) {
         const y = PAD_T + (1 - (t - yMin) / range) * PLOT_H;
         svg.appendChild(svgEl('line', {
           x1: PAD_L, x2: W - PAD_R, y1: y, y2: y, class: 'grid',
         }));
         const lbl = svgEl('text', {
-          x: PAD_L - 4, y: y + 3, class: 'axis', 'text-anchor': 'end',
+          x: PAD_L - 4, y: y + 3, 'text-anchor': 'end',
+          class: compact ? 'axis axis-mini' : 'axis',
         });
-        lbl.textContent = fmtY(t) + ser.unit;
+        lbl.textContent = compact ? String(Math.round(t)) : (fmtY(t) + ser.unit);
         svg.appendChild(lbl);
       }
     }
@@ -795,7 +799,7 @@ STATS_HTML = r"""<!doctype html>
     render('mem-svg',  series.mem);
     render('disk-svg', series.disk);
     for (let i = 0; i < coreSeries.length; i++) {
-      render('core-svg-' + i, coreSeries[i], { compact: true, fixedMax: 100 });
+      render('core-svg-' + i, coreSeries[i], { compact: true, fixedMax: 100, yAxis: true });
     }
   }
 
