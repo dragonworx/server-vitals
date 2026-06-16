@@ -66,7 +66,7 @@ command -v systemctl >/dev/null 2>&1 || die "systemctl not found (this installer
 # --- locate sources (checkout dir, or fetch when piped) ------------------------
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo /nonexistent)"
 TMP_SRC=""
-cleanup() { [ -n "$TMP_SRC" ] && rm -rf "$TMP_SRC"; }
+cleanup() { [ -n "$TMP_SRC" ] && rm -rf "$TMP_SRC"; return 0; }
 trap cleanup EXIT
 
 if [ ! -f "$SRC_DIR/health-server.py" ]; then
