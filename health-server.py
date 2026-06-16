@@ -363,9 +363,11 @@ STATS_HTML = r"""<!doctype html>
 <title>server stats</title>
 <style>
   :root { color-scheme: dark; }
-  html, body { margin: 0; padding: 0; background: #0b0d10; color: #d8dde3;
+  html, body { margin: 0; padding: 0; height: 100%; background: #0b0d10; color: #d8dde3;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-  header { padding: 12px 18px; border-bottom: 1px solid #20262d;
+  /* Fill the viewport: fixed header, panels share the remaining height evenly. */
+  body { display: flex; flex-direction: column; overflow: hidden; }
+  header { flex: 0 0 auto; padding: 12px 18px; border-bottom: 1px solid #20262d;
     display: flex; gap: 18px; align-items: center; }
   header h1 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: .04em;
     text-transform: uppercase; color: #9ba6b2; white-space: nowrap; }
@@ -379,16 +381,19 @@ STATS_HTML = r"""<!doctype html>
     border: 1px solid #20262d; border-radius: 4px; padding: 3px 6px;
     font-family: inherit; font-size: 11px; cursor: pointer; line-height: 1; }
   header .controls select:hover { border-color: #2a323b; }
-  main { padding: 12px 18px 24px; display: grid; gap: 14px; }
+  main { flex: 1 1 auto; min-height: 0; padding: 12px 18px;
+    display: grid; grid-template-rows: repeat(4, 1fr); gap: 12px; }
   .panel { background: #11151a; border: 1px solid #20262d; border-radius: 6px;
-    padding: 10px 12px 4px; }
-  .panel-head { display: flex; justify-content: space-between; align-items: baseline;
-    margin-bottom: 4px; }
+    padding: 8px 12px 6px; display: flex; flex-direction: column; min-height: 0; }
+  .panel-head { flex: 0 0 auto; display: flex; justify-content: space-between;
+    align-items: baseline; margin-bottom: 4px; }
   .panel-title { font-size: 12px; letter-spacing: .06em; text-transform: uppercase;
     color: #9ba6b2; }
   .panel-value { font-size: 13px; color: #e7ebf0; }
   .panel-value .sub { color: #6c7886; margin-left: 8px; font-size: 11px; }
-  svg { display: block; width: 100%; height: 160px; overflow: visible; }
+  svg { display: block; width: 100%; overflow: visible; }
+  /* The single-series panels let their graph grow to fill the panel height. */
+  .panel > svg { flex: 1 1 auto; min-height: 0; }
   .grid { stroke: #20262d; stroke-width: 1; }
   .axis { fill: #6c7886; font-size: 10px; font-family: inherit; }
   .line-cpu  { stroke: #6ddc8a; }
@@ -405,16 +410,18 @@ STATS_HTML = r"""<!doctype html>
   .peak-label.peak-cpu  { fill: #b8eec5; }
   .peak-label.peak-mem  { fill: #b8d8ee; }
   .peak-label.peak-disk { fill: #eed9b8; }
-  /* per-core CPU small-multiples */
-  .cores { display: grid; gap: 8px; margin: 2px 0 6px;
+  /* per-core CPU small-multiples — the grid fills the cores panel height */
+  .cores { flex: 1 1 auto; min-height: 0; display: grid; gap: 8px;
+    grid-auto-rows: 1fr;
     grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
   .core { background: #0e1216; border: 1px solid #1b2128; border-radius: 5px;
-    padding: 4px 7px 2px; }
-  .core-head { display: flex; justify-content: space-between; align-items: baseline; }
+    padding: 4px 7px 2px; display: flex; flex-direction: column; min-height: 0; }
+  .core-head { flex: 0 0 auto; display: flex; justify-content: space-between;
+    align-items: baseline; }
   .core-head .core-name { font-size: 10px; letter-spacing: .04em;
     text-transform: uppercase; color: #6c7886; }
   .core-head .core-val { font-size: 11px; color: #b8eec5; }
-  svg.core-svg { height: 48px; }
+  svg.core-svg { flex: 1 1 auto; min-height: 0; height: auto; }
 </style>
 </head>
 <body>
@@ -550,15 +557,17 @@ STATS_HTML = r"""<!doctype html>
     return e;
   };
 
-  function niceStep(range) {
-    if (range <= 0) return 1;
-    const exp = Math.pow(10, Math.floor(Math.log10(range)));
-    const n = range / exp;
+  // Round a target step up to a "nice" 1/2/5 × 10^k value, so the chosen step
+  // is close to `target` (≈ range / desired-tick-count) rather than far below it.
+  function niceStep(target) {
+    if (target <= 0) return 1;
+    const exp = Math.pow(10, Math.floor(Math.log10(target)));
+    const n = target / exp;
     let step;
-    if (n < 1.5) step = 0.2;
-    else if (n < 3) step = 0.5;
-    else if (n < 7) step = 1;
-    else step = 2;
+    if (n < 1.5) step = 1;
+    else if (n < 3) step = 2;
+    else if (n < 7) step = 5;
+    else step = 10;
     return step * exp;
   }
 
@@ -660,7 +669,9 @@ STATS_HTML = r"""<!doctype html>
 
     // y-axis grid (skipped in compact small-multiple mode)
     if (!compact) {
-      const step = niceStep(range / 3);
+      // Aim for one gridline per ~34px so short panels don't crowd the labels.
+      const targetTicks = Math.max(2, Math.min(6, Math.round(PLOT_H / 34)));
+      const step = niceStep(range / targetTicks);
       const tickStart = Math.ceil(yMin / step) * step;
       for (let t = tickStart; t <= yMax; t += step) {
         const y = PAD_T + (1 - (t - yMin) / range) * PLOT_H;
