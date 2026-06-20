@@ -1,5 +1,5 @@
-# health-server — convenience targets. Most wrap install.sh / systemctl.
-SERVICE := health-server
+# vitals — convenience targets. Most wrap install.sh / systemctl.
+SERVICE := vitals
 
 .PHONY: help install install-nginx uninstall run check restart status logs
 
@@ -17,10 +17,10 @@ uninstall: ## Stop + remove the service (sudo)
 	@./uninstall.sh
 
 run: ## Run in the foreground for local dev (no install)
-	@python3 health-server.py
+	@python3 vitals.py
 
 check: ## Syntax-check the Python source
-	@python3 -m py_compile health-server.py && echo "ok: health-server.py compiles"
+	@python3 -m py_compile vitals.py && echo "ok: vitals.py compiles"
 
 restart: ## Restart the installed service
 	@sudo systemctl restart $(SERVICE) && systemctl is-active $(SERVICE)

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# health-server installer.
+# vitals installer.
 #
-# Installs the health-server vitals endpoint as a systemd service:
-#   - copies health-server.py            -> /usr/local/bin/
-#   - installs health-server.service     -> /etc/systemd/system/
+# Installs the vitals server health endpoint as a systemd service:
+#   - copies vitals.py                   -> /usr/local/bin/
+#   - installs vitals.service            -> /etc/systemd/system/
 #   - (optional) installs the nginx snippet for reverse-proxying the endpoints
 #   - reloads systemd, enables + starts the service, and verifies it responds
 #
@@ -12,7 +12,7 @@
 #   sudo ./install.sh [options]
 #
 # Usage (piped from the internet — set the raw base URL of the repo):
-#   curl -fsSL <raw>/install.sh | HEALTH_SERVER_RAW_BASE=<raw> sudo -E bash
+#   curl -fsSL <raw>/install.sh | VITALS_RAW_BASE=<raw> sudo -E bash
 #
 # Options:
 #   --with-nginx     also install the nginx snippet and reload nginx
@@ -22,10 +22,10 @@
 #
 set -euo pipefail
 
-SERVICE_NAME="health-server"
-BIN_DST="/usr/local/bin/health-server.py"
+SERVICE_NAME="vitals"
+BIN_DST="/usr/local/bin/vitals.py"
 SVC_DST="/etc/systemd/system/${SERVICE_NAME}.service"
-NGINX_SNIPPET_DST="/etc/nginx/snippets/health-endpoints.conf"
+NGINX_SNIPPET_DST="/etc/nginx/snippets/vitals.conf"
 HEALTH_URL="http://127.0.0.1:9999/health"
 
 RUN_USER="www-data"
@@ -69,21 +69,21 @@ TMP_SRC=""
 cleanup() { [ -n "$TMP_SRC" ] && rm -rf "$TMP_SRC"; return 0; }
 trap cleanup EXIT
 
-if [ ! -f "$SRC_DIR/health-server.py" ]; then
-  [ -n "${HEALTH_SERVER_RAW_BASE:-}" ] || \
-    die "can't find health-server.py next to the installer; set HEALTH_SERVER_RAW_BASE to fetch it"
-  log "fetching sources from $HEALTH_SERVER_RAW_BASE"
+if [ ! -f "$SRC_DIR/vitals.py" ]; then
+  [ -n "${VITALS_RAW_BASE:-}" ] || \
+    die "can't find vitals.py next to the installer; set VITALS_RAW_BASE to fetch it"
+  log "fetching sources from $VITALS_RAW_BASE"
   TMP_SRC="$(mktemp -d)"
-  for f in health-server.py health-server.service nginx/health-endpoints.conf; do
+  for f in vitals.py vitals.service nginx/vitals.conf; do
     mkdir -p "$TMP_SRC/$(dirname "$f")"
-    curl -fsSL "${HEALTH_SERVER_RAW_BASE%/}/$f" -o "$TMP_SRC/$f" || die "failed to fetch $f"
+    curl -fsSL "${VITALS_RAW_BASE%/}/$f" -o "$TMP_SRC/$f" || die "failed to fetch $f"
   done
   SRC_DIR="$TMP_SRC"
 fi
 
 # --- install binary ------------------------------------------------------------
 log "installing binary -> $BIN_DST"
-install -m 0755 "$SRC_DIR/health-server.py" "$BIN_DST"
+install -m 0755 "$SRC_DIR/vitals.py" "$BIN_DST"
 ok "binary installed"
 
 # --- install systemd unit (with the requested run user) ------------------------
@@ -91,7 +91,7 @@ log "installing service -> $SVC_DST (user: $RUN_USER)"
 tmp_unit="$(mktemp)"
 sed -e "s/^User=.*/User=${RUN_USER}/" \
     -e "s/^Group=.*/Group=${RUN_USER}/" \
-    "$SRC_DIR/health-server.service" > "$tmp_unit"
+    "$SRC_DIR/vitals.service" > "$tmp_unit"
 install -m 0644 "$tmp_unit" "$SVC_DST"
 rm -f "$tmp_unit"
 systemctl daemon-reload
@@ -100,14 +100,14 @@ ok "service installed"
 # --- optional nginx snippet ----------------------------------------------------
 if [ "$WITH_NGINX" -eq 1 ]; then
   log "installing nginx snippet -> $NGINX_SNIPPET_DST"
-  install -D -m 0644 "$SRC_DIR/nginx/health-endpoints.conf" "$NGINX_SNIPPET_DST"
+  install -D -m 0644 "$SRC_DIR/nginx/vitals.conf" "$NGINX_SNIPPET_DST"
   if command -v nginx >/dev/null 2>&1 && nginx -t >/dev/null 2>&1; then
     systemctl reload nginx && ok "nginx reloaded"
   else
     warn "nginx config test failed or nginx absent — snippet copied but not reloaded"
   fi
   warn "add this to the server blocks that should expose the endpoints:"
-  warn "    include snippets/health-endpoints.conf;"
+  warn "    include snippets/vitals.conf;"
 fi
 
 # --- enable + start ------------------------------------------------------------

@@ -1,4 +1,4 @@
-# health-server
+# 📈 vitals
 
 A tiny, dependency-free server vitals endpoint. One Python file, standard
 library only — no pip installs, no virtualenv. It exposes a few JSON health
@@ -33,8 +33,8 @@ selectable from the header and persisted in `localStorage`.
 **From a checkout** (recommended):
 
 ```bash
-git clone <repo-url> health-server
-cd health-server
+git clone <repo-url> vitals
+cd vitals
 sudo ./install.sh            # or: make install
 ```
 
@@ -47,31 +47,31 @@ sudo ./install.sh --with-nginx
 **One-liner** (when hosted — point it at the repo's raw base URL):
 
 ```bash
-curl -fsSL <raw>/install.sh | HEALTH_SERVER_RAW_BASE=<raw> sudo -E bash
+curl -fsSL <raw>/install.sh | VITALS_RAW_BASE=<raw> sudo -E bash
 ```
 
-The installer copies `health-server.py` to `/usr/local/bin`, installs the
-`health-server` systemd unit, enables + starts it, and verifies `/health`
+The installer copies `vitals.py` to `/usr/local/bin`, installs the
+`vitals` systemd unit, enables + starts it, and verifies `/health`
 responds.
 
 ### install.sh options
 
 | Option          | Effect                                                |
 | --------------- | ----------------------------------------------------- |
-| `--with-nginx`  | also install `nginx/health-endpoints.conf` and reload |
+| `--with-nginx`  | also install `nginx/vitals.conf` and reload nginx     |
 | `--no-start`    | install files but don't enable/start the service      |
 | `--user USER`   | run the service as `USER` (default `www-data`)        |
 
 ## nginx integration
 
-The snippet at [`nginx/health-endpoints.conf`](nginx/health-endpoints.conf)
+The snippet at [`nginx/vitals.conf`](nginx/vitals.conf)
 proxies `/health`, `/code-server`, and `/stats` to `127.0.0.1:9999`. After
 installing it (`--with-nginx`), `include` it in any server block:
 
 ```nginx
 server {
     # ...
-    include snippets/health-endpoints.conf;
+    include snippets/vitals.conf;
 }
 ```
 
@@ -80,7 +80,7 @@ Then `sudo nginx -t && sudo systemctl reload nginx`.
 ## Run locally (no install)
 
 ```bash
-make run          # python3 health-server.py — serves on 127.0.0.1:9999
+make run          # python3 vitals.py — serves on 127.0.0.1:9999
 ```
 
 Open <http://127.0.0.1:9999/stats>.
@@ -89,7 +89,7 @@ Open <http://127.0.0.1:9999/stats>.
 
 ```bash
 make status       # systemctl status
-make logs         # journalctl -u health-server -f
+make logs         # journalctl -u vitals -f
 make restart      # restart the service
 make check        # py_compile the source
 ```
@@ -103,7 +103,7 @@ sudo ./uninstall.sh --purge-nginx   # also remove the nginx snippet
 
 ## Configuration
 
-Knobs live at the top of `health-server.py`:
+Knobs live at the top of `vitals.py`:
 
 - `LISTEN` — bind address/port (default `127.0.0.1:9999`)
 - `CODE_SERVER_UNIT` / `CODE_SERVER_PORT` / `CODE_SERVER_HEALTHZ` — the unit the

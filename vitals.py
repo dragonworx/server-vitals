@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lightweight health endpoint server. Listens on 127.0.0.1:9999.
+"""vitals — lightweight server health endpoint. Listens on 127.0.0.1:9999.
 
 Exposes:
   GET /health       - server-wide vitals (cpu, memory, disk, load, uptime)
@@ -360,7 +360,7 @@ STATS_HTML = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>server stats</title>
+<title>📈 Vitals</title>
 <style>
   :root { color-scheme: dark; }
   html, body { margin: 0; padding: 0; height: 100%; background: #0b0d10; color: #d8dde3;
@@ -427,7 +427,7 @@ STATS_HTML = r"""<!doctype html>
 </head>
 <body>
 <header>
-  <h1>server stats</h1>
+  <h1>📈 Vitals</h1>
   <div class="meta">status: <span id="status" class="ok">connecting…</span></div>
   <div class="controls">
     <span class="ctl">poll
@@ -941,7 +941,7 @@ STATS_HTML = r"""<!doctype html>
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "health-server/1.0"
+    server_version = "vitals/1.0"
 
     def log_message(self, fmt, *args):
         return
