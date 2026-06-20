@@ -1,7 +1,7 @@
 # vitals — convenience targets. Most wrap install.sh / systemctl.
 SERVICE := vitals
 
-.PHONY: help install install-nginx uninstall run check restart status logs
+.PHONY: help install install-nginx uninstall run check start stop restart deploy status logs
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -22,8 +22,17 @@ run: ## Run in the foreground for local dev (no install)
 check: ## Syntax-check the Python source
 	@python3 -m py_compile vitals.py && echo "ok: vitals.py compiles"
 
-restart: ## Restart the installed service
+start: ## Start the installed service
+	@sudo systemctl start $(SERVICE) && systemctl is-active $(SERVICE)
+
+stop: ## Stop the installed service
+	@sudo systemctl stop $(SERVICE) && echo "stopped $(SERVICE)"
+
+restart: ## Restart the installed service (no code redeploy)
 	@sudo systemctl restart $(SERVICE) && systemctl is-active $(SERVICE)
+
+deploy: ## Rebuild: reinstall current vitals.py + restart (sudo)
+	@./install.sh
 
 status: ## Show service status
 	@systemctl status $(SERVICE) --no-pager || true

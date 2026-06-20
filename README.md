@@ -28,6 +28,38 @@ selectable from the header and persisted in `localStorage`.
 - `python3` (standard library only)
 - `systemd` (for the service) — optional `nginx` for reverse proxying
 
+## Why a systemd service, not a Docker container
+
+vitals is a **host-monitoring agent**, so it is deployed as a plain process
+under systemd — *not* in a container. This is deliberate. The whole job of the
+app is to observe the host it runs on:
+
+- It reads the host kernel directly: `/proc/stat`, `/proc/meminfo`,
+  `/proc/loadavg`, and `statvfs("/")` for CPU / memory / load / disk.
+- It shells out to the host's `systemctl`, `journalctl`, and `pgrep` to report
+  deep status of the `code-server@ubuntu` unit (`/code-server`).
+
+A container's value is **isolation** — its own filesystem, PID namespace, and
+network stack, separate from the host. That is exactly the wrong default here:
+
+| Concern | systemd service (this project) | Docker container |
+| --- | --- | --- |
+| Sees real host CPU / mem / disk | ✅ directly | ❌ sees the container namespace unless you bind-mount `/proc`, `/`, … |
+| Inspect host systemd units (`systemctl` / `journalctl`) | ✅ works | ❌ no systemd/journal inside — `/code-server` breaks without mounting host sockets |
+| Lifecycle / autostart / restart | systemd (`enable --now`, `Restart=`) | Docker daemon (`restart: unless-stopped`) |
+| Footprint | ~none — one stdlib Python process | image build + daemon overhead |
+
+To run vitals usefully in a container you would have to dismantle that
+isolation (`--pid=host`, `-v /proc:/host/proc:ro`, `-v /:/rootfs:ro`, expose the
+systemd/journal sockets) **and** rewrite the metric paths to read `/host/proc/*`
+— more moving parts for a strictly less capable result. So it ships as a
+service. Containers remain the right tool for workloads you want *isolated from*
+the host (web apps, databases); a host agent is the opposite case.
+
+> If you genuinely need it containerized anyway (e.g. a constrained PaaS), run
+> with `--pid=host --network=host`, bind-mount `/proc` and `/` read-only, and
+> expect `/code-server`'s systemd introspection to be unavailable.
+
 ## Install
 
 **From a checkout** (recommended):
@@ -88,11 +120,35 @@ Open <http://127.0.0.1:9999/stats>.
 ## Manage
 
 ```bash
+make start        # start the service
+make stop         # stop the service
+make restart      # restart (no code redeploy)
+make deploy       # rebuild: reinstall current vitals.py + restart
 make status       # systemctl status
 make logs         # journalctl -u vitals -f
-make restart      # restart the service
 make check        # py_compile the source
 ```
+
+Use `make restart` to bounce the running service; use `make deploy` after
+editing `vitals.py` to push the new code and restart in one step.
+
+### Via Bun
+
+If you prefer Bun, the same targets are exposed as `package.json` scripts that
+just wrap the Makefile — so there are **no JS dependencies** and `bun install`
+is not needed:
+
+```bash
+bun run start      # or: bun start
+bun run restart
+bun run deploy     # rebuild: reinstall vitals.py + restart
+bun run logs
+bun run dev        # run in the foreground (python3 vitals.py)
+```
+
+`start` / `stop` / `restart` / `deploy` shell out to `sudo systemctl`, so
+they'll prompt for your sudo password. The Makefile stays the source of truth;
+Bun is just an alternate front door.
 
 ## Uninstall
 
@@ -109,7 +165,8 @@ Knobs live at the top of `vitals.py`:
 - `CODE_SERVER_UNIT` / `CODE_SERVER_PORT` / `CODE_SERVER_HEALTHZ` — the unit the
   `/code-server` probe inspects
 
-After editing, re-run `sudo ./install.sh` (or `make restart` if only restarting).
+After editing, run `make deploy` to push the new code and restart (or
+`make restart` if you only need to bounce the running service).
 
 ## License
 

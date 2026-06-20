@@ -401,9 +401,8 @@ STATS_HTML = r"""<!doctype html>
   .line-mem  { stroke: #6db5dc; }
   .line-disk { stroke: #dcb86d; }
   .line { fill: none; stroke-width: 1.5; }
-  .fill-cpu  { fill: rgba(109,220,138,.10); }
-  .fill-mem  { fill: rgba(109,181,220,.10); }
-  .fill-disk { fill: rgba(220,184,109,.10); }
+  /* Filled areas use a per-chart vertical value-gradient (see render()); their
+     paint is set inline via a userSpaceOnUse <linearGradient>, not a class. */
   .gap       { fill: rgba(255,107,107,.18); }
   .gap-edge  { stroke: rgba(255,107,107,.55); stroke-width: 1; stroke-dasharray: 2 2; }
   .peak-label { font-size: 10px; font-family: inherit; paint-order: stroke fill;
@@ -506,10 +505,16 @@ STATS_HTML = r"""<!doctype html>
   // Points kept = window seconds / poll seconds.
   let MAX_POINTS = Math.max(2, Math.round(windowMin * 60 / pollSec));
 
+  // Filled-area gradient endpoints, shared by every chart: `from` paints the
+  // baseline (low/cool values), `to` paints the top of the plot (high/hot).
+  // Per-chart so individual graphs could diverge later; for now all green→red.
+  const GRAD_FROM = '#27c93f';  // green — low values
+  const GRAD_TO   = '#ff4d4d';  // red   — high values
+
   const series = {
-    cpu:  { data: [], color: 'cpu',  unit: '%' },
-    mem:  { data: [], color: 'mem',  unit: '%' },
-    disk: { data: [], color: 'disk', unit: '%' },
+    cpu:  { data: [], color: 'cpu',  unit: '%', from: GRAD_FROM, to: GRAD_TO },
+    mem:  { data: [], color: 'mem',  unit: '%', from: GRAD_FROM, to: GRAD_TO },
+    disk: { data: [], color: 'disk', unit: '%', from: GRAD_FROM, to: GRAD_TO },
   };
   // null in any data array represents a failed/timed-out poll at that slot.
 
@@ -542,7 +547,7 @@ STATS_HTML = r"""<!doctype html>
       cell.appendChild(head);
       cell.appendChild(svg);
       host.appendChild(cell);
-      coreSeries.push({ data: [], color: 'cpu', unit: '%' });
+      coreSeries.push({ data: [], color: 'cpu', unit: '%', from: GRAD_FROM, to: GRAD_TO });
       coreValEls.push(val);
     }
   }
@@ -715,6 +720,29 @@ STATS_HTML = r"""<!doctype html>
     const xAt = i => xOffset + i * xStep;
     const yAt = v => PAD_T + (1 - (v - yMin) / range) * PLOT_H;
 
+    // Vertical value-gradient for the filled area. The stops are anchored (in
+    // user space) to the plot-y of value 0 (`from`) and value `gradMax` (`to`) —
+    // NOT the visible plot edges and NOT the path's bounding box. That makes the
+    // colour at any pixel a straight lerp(from → to, value / gradMax): it tracks
+    // the real value, independent of how tightly the y-axis is auto-scaled. So a
+    // CPU graph hovering at 10% reads ~10% of the way green→red (nearly pure
+    // green) even when the axis is zoomed into 0–20%. Opacity is held constant
+    // so only the hue carries the value. yAt(gradMax)/yAt(0) may fall outside the
+    // visible band — SVG just clamps (spreadMethod=pad), which is what we want.
+    // One def per chart, referenced by all fill segments; GPU-rasterised.
+    const gradMax = opts.fixedMax != null ? opts.fixedMax : 100;
+    const gradId = 'fill-grad-' + svgId;
+    const grad = svgEl('linearGradient', {
+      id: gradId, gradientUnits: 'userSpaceOnUse',
+      x1: 0, y1: yAt(gradMax), x2: 0, y2: yAt(0),
+    });
+    grad.appendChild(svgEl('stop', { offset: '0', 'stop-color': ser.to,   'stop-opacity': '0.32' }));
+    grad.appendChild(svgEl('stop', { offset: '1', 'stop-color': ser.from, 'stop-opacity': '0.32' }));
+    const defs = svgEl('defs', {});
+    defs.appendChild(grad);
+    svg.appendChild(defs);
+    const fillRef = 'url(#' + gradId + ')';
+
     // 1. Draw gap bands for runs of null values.
     let i = 0;
     while (i < n) {
@@ -761,7 +789,7 @@ STATS_HTML = r"""<!doctype html>
           area += x.toFixed(2) + ' ' + y.toFixed(2) + ' ';
         }
         area += 'L' + xAt(segEnd).toFixed(2) + ' ' + baseY.toFixed(2) + ' Z';
-        svg.appendChild(svgEl('path', { d: area, class: 'fill-' + ser.color }));
+        svg.appendChild(svgEl('path', { d: area, fill: fillRef }));
         svg.appendChild(svgEl('path', { d: d, class: 'line line-' + ser.color }));
       } else if (segEnd === segStart) {
         // single non-null point sandwiched between gaps — show as a dot
