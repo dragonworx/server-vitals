@@ -105,6 +105,21 @@ server {
 
 Then `sudo nginx -t && sudo systemctl reload nginx`.
 
+## Caddy integration
+
+For [Caddy](https://caddyserver.com), proxy `/health` and `/stats` to
+`127.0.0.1:9999` in your `Caddyfile`:
+
+```caddy
+example.com {
+    # ...
+    reverse_proxy /health 127.0.0.1:9999
+    reverse_proxy /stats 127.0.0.1:9999
+}
+```
+
+Then `sudo caddy validate && sudo systemctl reload caddy`.
+
 ## Run locally (no install)
 
 ```bash
