@@ -310,7 +310,7 @@ STATS_HTML = r"""<!doctype html>
   .core-head { flex: 0 0 auto; display: flex; justify-content: space-between;
     align-items: baseline; }
   .core-head .core-name { font-size: 10px; letter-spacing: .04em;
-    text-transform: uppercase; color: #6c7886; }
+    text-transform: uppercase; color: #ffffff; }
   .core-head .core-val { font-size: 11px; color: #b8eec5; }
   svg.core-svg { flex: 1 1 auto; min-height: 0; height: auto; }
   footer { flex: 0 0 auto; text-align: center; padding: 7px 18px;
