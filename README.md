@@ -11,7 +11,12 @@ reverse-proxied at paths like `/health` and `/stats`.
 <p align="center">
   <img src="doc/server-vitals-screenshot-desktop.webp" alt="Server Vitals dashboard (desktop)" width="100%">
   <br>
+  <em>Desktop view</em>
+  <br>
+  <br>
   <img src="doc/server-vitals-screenshot-mobile.webp" alt="Server Vitals dashboard (mobile)" width="280">
+  <br>
+  <em>Mobile Portrait View</em>
 </p>
 
 ## Endpoints
