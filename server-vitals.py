@@ -1306,7 +1306,38 @@ class Handler(BaseHTTPRequestHandler):
                 self.close_connection = True
 
 
+def _startup_banner():
+    """A short framed banner printed once at startup so launching the server —
+    `make run`, `python3 server-vitals.py`, launchd, or systemd (where it lands in
+    the journal) — gives immediate feedback: which backend is in use and the URLs
+    to open."""
+    host, port = LISTEN
+    if IS_MACOS:
+        backend = "macOS · Mach + sysctl"
+    elif IS_LINUX:
+        backend = "Linux · /proc"
+    else:
+        backend = sys.platform
+    base = "http://%s:%d" % (host, port)
+    rows = [
+        "Server Vitals — host monitoring agent",
+        "backend: " + backend,
+        "",
+        "dashboard  " + base + "/stats",
+        "health     " + base + "/health",
+        "json       " + base + "/stats?format=json",
+        "",
+        "Ctrl+C to stop",
+    ]
+    width = max(len(r) for r in rows)
+    top = "┌" + "─" * (width + 2) + "┐"
+    bot = "└" + "─" * (width + 2) + "┘"
+    body = "\n".join("│ " + r.ljust(width) + " │" for r in rows)
+    print("\n" + top + "\n" + body + "\n" + bot + "\n", flush=True)
+
+
 def main():
+    _startup_banner()
     _sampler.start()
     server = ThreadingHTTPServer(LISTEN, Handler)
     server.daemon_threads = True
