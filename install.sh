@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# vitals installer.
+# Server Vitals installer.
 #
-# Installs the vitals server health endpoint as a systemd service:
-#   - copies vitals.py                   -> /usr/local/bin/
-#   - installs vitals.service            -> /etc/systemd/system/
+# Installs the Server Vitals server health endpoint as a systemd service:
+#   - copies server-vitals.py                   -> /usr/local/bin/
+#   - installs server-vitals.service            -> /etc/systemd/system/
 #   - (optional) installs the nginx snippet for reverse-proxying the endpoints
 #   - reloads systemd, enables + starts the service, and verifies it responds
 #
@@ -22,10 +22,10 @@
 #
 set -euo pipefail
 
-SERVICE_NAME="vitals"
-BIN_DST="/usr/local/bin/vitals.py"
+SERVICE_NAME="server-vitals"
+BIN_DST="/usr/local/bin/server-vitals.py"
 SVC_DST="/etc/systemd/system/${SERVICE_NAME}.service"
-NGINX_SNIPPET_DST="/etc/nginx/snippets/vitals.conf"
+NGINX_SNIPPET_DST="/etc/nginx/snippets/server-vitals.conf"
 HEALTH_URL="http://127.0.0.1:9999/health"
 
 RUN_USER="www-data"
@@ -69,12 +69,12 @@ TMP_SRC=""
 cleanup() { [ -n "$TMP_SRC" ] && rm -rf "$TMP_SRC"; return 0; }
 trap cleanup EXIT
 
-if [ ! -f "$SRC_DIR/vitals.py" ]; then
+if [ ! -f "$SRC_DIR/server-vitals.py" ]; then
   [ -n "${VITALS_RAW_BASE:-}" ] || \
-    die "can't find vitals.py next to the installer; set VITALS_RAW_BASE to fetch it"
+    die "can't find server-vitals.py next to the installer; set VITALS_RAW_BASE to fetch it"
   log "fetching sources from $VITALS_RAW_BASE"
   TMP_SRC="$(mktemp -d)"
-  for f in vitals.py vitals.service nginx/vitals.conf; do
+  for f in server-vitals.py server-vitals.service nginx/server-vitals.conf; do
     mkdir -p "$TMP_SRC/$(dirname "$f")"
     curl -fsSL "${VITALS_RAW_BASE%/}/$f" -o "$TMP_SRC/$f" || die "failed to fetch $f"
   done
@@ -83,7 +83,7 @@ fi
 
 # --- install binary ------------------------------------------------------------
 log "installing binary -> $BIN_DST"
-install -m 0755 "$SRC_DIR/vitals.py" "$BIN_DST"
+install -m 0755 "$SRC_DIR/server-vitals.py" "$BIN_DST"
 ok "binary installed"
 
 # --- install systemd unit (with the requested run user) ------------------------
@@ -91,7 +91,7 @@ log "installing service -> $SVC_DST (user: $RUN_USER)"
 tmp_unit="$(mktemp)"
 sed -e "s/^User=.*/User=${RUN_USER}/" \
     -e "s/^Group=.*/Group=${RUN_USER}/" \
-    "$SRC_DIR/vitals.service" > "$tmp_unit"
+    "$SRC_DIR/server-vitals.service" > "$tmp_unit"
 install -m 0644 "$tmp_unit" "$SVC_DST"
 rm -f "$tmp_unit"
 systemctl daemon-reload
@@ -100,14 +100,14 @@ ok "service installed"
 # --- optional nginx snippet ----------------------------------------------------
 if [ "$WITH_NGINX" -eq 1 ]; then
   log "installing nginx snippet -> $NGINX_SNIPPET_DST"
-  install -D -m 0644 "$SRC_DIR/nginx/vitals.conf" "$NGINX_SNIPPET_DST"
+  install -D -m 0644 "$SRC_DIR/nginx/server-vitals.conf" "$NGINX_SNIPPET_DST"
   if command -v nginx >/dev/null 2>&1 && nginx -t >/dev/null 2>&1; then
     systemctl reload nginx && ok "nginx reloaded"
   else
     warn "nginx config test failed or nginx absent — snippet copied but not reloaded"
   fi
   warn "add this to the server blocks that should expose the endpoints:"
-  warn "    include snippets/vitals.conf;"
+  warn "    include snippets/server-vitals.conf;"
 fi
 
 # --- enable + start ------------------------------------------------------------

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# vitals uninstaller. Stops + disables the service and removes the
+# Server Vitals uninstaller. Stops + disables the service and removes the
 # installed files. Leaves the nginx snippet alone unless --purge-nginx is given
 # (since it may still be `include`d by live server blocks).
 #
@@ -9,10 +9,10 @@
 #
 set -euo pipefail
 
-SERVICE_NAME="vitals"
-BIN_DST="/usr/local/bin/vitals.py"
+SERVICE_NAME="server-vitals"
+BIN_DST="/usr/local/bin/server-vitals.py"
 SVC_DST="/etc/systemd/system/${SERVICE_NAME}.service"
-NGINX_SNIPPET_DST="/etc/nginx/snippets/vitals.conf"
+NGINX_SNIPPET_DST="/etc/nginx/snippets/server-vitals.conf"
 
 PURGE_NGINX=0
 [ "${1:-}" = "--purge-nginx" ] && PURGE_NGINX=1

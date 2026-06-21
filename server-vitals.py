@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""vitals — lightweight server health endpoint. Listens on 127.0.0.1:9999.
+"""Server Vitals — lightweight server health endpoint. Listens on 127.0.0.1:9999.
 
 Exposes:
   GET /health       - server-wide vitals (cpu, memory, disk, load, uptime)
@@ -180,6 +180,7 @@ def stats_payload():
         "cpu_percent": cpu_percent_delta(),
         "cpu_count": cpu_count(),
         "cpu_cores": cpu_core_percents(),
+        "load_average": loadavg(),
         "memory_percent": mem["percent"],
         "memory_used_mb": mem["used_mb"],
         "memory_total_mb": mem["total_mb"],
@@ -360,7 +361,7 @@ STATS_HTML = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>📈 Vitals</title>
+<title>Server Vitals</title>
 <style>
   :root { color-scheme: dark; }
   html, body { margin: 0; padding: 0; height: 100%; background: #0b0d10; color: #d8dde3;
@@ -369,11 +370,38 @@ STATS_HTML = r"""<!doctype html>
   body { display: flex; flex-direction: column; overflow: hidden; }
   header { flex: 0 0 auto; padding: 12px 18px; border-bottom: 1px solid #20262d;
     display: flex; gap: 18px; align-items: center; }
-  header h1 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: .04em;
-    text-transform: uppercase; color: #9ba6b2; white-space: nowrap; }
+  header h1 { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: .14em;
+    font-family: "Avenir Next", "Segoe UI", system-ui, -apple-system,
+      "Helvetica Neue", Arial, sans-serif;
+    white-space: nowrap;
+    /* A wave of light/dark grey sweeps through the title. One cycle takes
+       --pulse-duration (set from JS to the poll interval — one sweep per poll).
+       The bright band is the wave crest moving across the text. */
+    background: linear-gradient(100deg,
+      #5b636d 0%, #5b636d 38%, #828a94 50%, #5b636d 62%, #5b636d 100%);
+    background-size: 200% 100%;
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent; color: transparent;
+    animation: title-wave var(--pulse-duration, 2000ms) linear infinite; }
+  /* Travel exactly one tile width (200%) per cycle, so precisely one bright
+     crest sweeps across the title each --pulse-duration (= one poll interval). */
+  @keyframes title-wave {
+    from { background-position: 200% 0; }
+    to   { background-position: 0% 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    header h1 { animation: none; -webkit-text-fill-color: #cfd6de; color: #cfd6de; }
+  }
   header .meta { font-size: 12px; color: #6c7886; white-space: nowrap; }
-  header .meta .ok { color: #6ddc8a; }
-  header .meta .err { color: #ff6b6b; }
+  /* Fine-grained server load status — greens → oranges → reds. */
+  header .meta .status { font-weight: 600; letter-spacing: .05em;
+    text-transform: uppercase; }
+  header .meta .st-idle     { color: #6ddc8a; }   /* green  — at rest        */
+  header .meta .st-light    { color: #b6e36a; }   /* green  — light load     */
+  header .meta .st-heavy    { color: #ffae57; }   /* orange — heavy load     */
+  header .meta .st-critical { color: #ff6b6b; }   /* red    — near limits    */
+  header .meta .st-hung     { color: #e23b3b; animation: hung-blink 1s steps(2) infinite; }
+  @keyframes hung-blink { 50% { opacity: .35; } }
   header .controls { margin-left: auto; display: flex; gap: 12px; align-items: center; }
   header .controls .ctl { display: inline-flex; align-items: center; gap: 5px;
     font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: #9ba6b2; }
@@ -381,6 +409,14 @@ STATS_HTML = r"""<!doctype html>
     border: 1px solid #20262d; border-radius: 4px; padding: 3px 6px;
     font-family: inherit; font-size: 11px; cursor: pointer; line-height: 1; }
   header .controls select:hover { border-color: #2a323b; }
+  header button.ctl-btn { background: #11151a; color: #d8dde3;
+    border: 1px solid #20262d; border-radius: 4px; padding: 2px 7px;
+    font-family: inherit; font-size: 12px; line-height: 1; cursor: pointer;
+    display: inline-flex; align-items: center; }
+  header button.ctl-btn:hover { border-color: #2a323b; }
+  /* Paused: button glows green and the title strobe halts to signal "frozen". */
+  header button.ctl-btn.paused { color: #6ddc8a; border-color: #2f6b41; }
+  body.paused header h1 { animation-play-state: paused; }
   main { flex: 1 1 auto; min-height: 0; padding: 12px 18px;
     display: grid; grid-template-rows: repeat(4, 1fr); gap: 12px; }
   .panel { background: #11151a; border: 1px solid #20262d; border-radius: 6px;
@@ -410,30 +446,38 @@ STATS_HTML = r"""<!doctype html>
   .peak-label.peak-cpu  { fill: #b8eec5; }
   .peak-label.peak-mem  { fill: #b8d8ee; }
   .peak-label.peak-disk { fill: #eed9b8; }
-  /* per-core CPU small-multiples — the grid fills the cores panel height */
+  /* per-core CPU small-multiples — the grid fills the cores panel height, and
+     the core panels stretch to fill the row width (auto-fit collapses empty
+     trailing tracks; auto-fill would leave phantom columns and dead space). */
   .cores { flex: 1 1 auto; min-height: 0; display: grid; gap: 8px;
     grid-auto-rows: 1fr;
-    grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
   .core { background: #0e1216; border: 1px solid #1b2128; border-radius: 5px;
-    padding: 4px 7px 2px; display: flex; flex-direction: column; min-height: 0; }
+    padding: 4px 7px 2px; display: flex; flex-direction: column; min-height: 0;
+    transition: background 600ms linear; }
   .core-head { flex: 0 0 auto; display: flex; justify-content: space-between;
     align-items: baseline; }
   .core-head .core-name { font-size: 10px; letter-spacing: .04em;
     text-transform: uppercase; color: #6c7886; }
   .core-head .core-val { font-size: 11px; color: #b8eec5; }
   svg.core-svg { flex: 1 1 auto; min-height: 0; height: auto; }
+  footer { flex: 0 0 auto; text-align: center; padding: 7px 18px;
+    font-size: 11px; color: #6c7886; border-top: 1px solid #20262d; }
+  footer a { color: #9ba6b2; text-decoration: none; }
+  footer a:hover { color: #d8dde3; text-decoration: underline; }
 </style>
 </head>
 <body>
 <header>
-  <h1>📈 Vitals</h1>
-  <div class="meta">status: <span id="status" class="ok">connecting…</span></div>
+  <h1>Server Vitals</h1>
+  <div class="meta">status: <span id="status" class="status st-idle">connecting…</span></div>
   <div class="controls">
     <span class="ctl">poll
       <select id="poll-sel">
         <option value="0.25">0.25s</option>
         <option value="0.5">0.5s</option>
         <option value="1">1s</option>
+        <option value="3">3s</option>
         <option value="5">5s</option>
         <option value="10">10s</option>
       </select>
@@ -441,6 +485,7 @@ STATS_HTML = r"""<!doctype html>
     <span class="ctl">window
       <select id="window-sel">
         <option value="1">1m</option>
+        <option value="3">3m</option>
         <option value="5">5m</option>
         <option value="10">10m</option>
         <option value="30">30m</option>
@@ -448,20 +493,22 @@ STATS_HTML = r"""<!doctype html>
       </select>
     </span>
   </div>
+  <button id="pause-btn" class="ctl-btn" type="button"
+    title="Pause polling" aria-label="Pause polling" aria-pressed="false">⏸</button>
 </header>
 <main>
+  <section class="panel" id="cores-panel">
+    <div class="panel-head">
+      <div class="panel-title">CPU Cores · <span id="cores-count">—</span></div>
+    </div>
+    <div class="cores" id="cores"></div>
+  </section>
   <section class="panel" id="cpu-panel">
     <div class="panel-head">
       <div class="panel-title">CPU</div>
       <div class="panel-value"><span id="cpu-now">—</span><span class="sub" id="cpu-sub"></span></div>
     </div>
     <svg id="cpu-svg"></svg>
-  </section>
-  <section class="panel" id="cores-panel">
-    <div class="panel-head">
-      <div class="panel-title">CPU Cores · <span id="cores-count">—</span></div>
-    </div>
-    <div class="cores" id="cores"></div>
   </section>
   <section class="panel" id="mem-panel">
     <div class="panel-head">
@@ -478,13 +525,15 @@ STATS_HTML = r"""<!doctype html>
     <svg id="disk-svg"></svg>
   </section>
 </main>
+<footer>Made with ❤️ by <a href="https://github.com/dragonworx/server-vitals"
+  target="_blank" rel="noopener noreferrer">dragonworx</a></footer>
 <script>
 (() => {
   const FETCH_TIMEOUT_MS = 2000;
   const BASE_PAD_L = 44, BASE_PAD_R = 8, BASE_PAD_T = 8, BASE_PAD_B = 18;
 
-  const POLL_OPTIONS = [0.25, 0.5, 1, 5, 10];   // seconds
-  const WINDOW_OPTIONS = [1, 5, 10, 30, 60];    // minutes
+  const POLL_OPTIONS = [0.25, 0.5, 1, 3, 5, 10];   // seconds
+  const WINDOW_OPTIONS = [1, 3, 5, 10, 30, 60];    // minutes
   const POLL_KEY = 'stats:poll:sec';
   const WINDOW_KEY = 'stats:window:min';
 
@@ -505,28 +554,71 @@ STATS_HTML = r"""<!doctype html>
   // Points kept = window seconds / poll seconds.
   let MAX_POINTS = Math.max(2, Math.round(windowMin * 60 / pollSec));
 
+  // The title's grey wave completes one cycle in half the poll interval — i.e.
+  // twice as fast as the graph advances. Re-applied whenever the poll changes.
+  function applyPulseTiming() {
+    document.documentElement.style.setProperty('--pulse-duration', pollMs + 'ms');
+  }
+  applyPulseTiming();
+
+  // Fine-grained load classifier. Each signal (CPU%, memory%, load-per-core) is
+  // bucketed into a severity 0..3; the worst signal wins. load-per-core is the
+  // 1-min load average divided by core count, the classic over-subscription gauge.
+  // A wildly over-subscribed box (load ≥ 4×cores) — or one that stops answering —
+  // is reported as "hung". States: idle · light · heavy · critical · hung.
+  const LOAD_STATES = ['idle', 'light', 'heavy', 'critical'];
+  function classifyLoad(cpu, mem, loadPerCore) {
+    const cpuLvl  = cpu >= 90 ? 3 : cpu >= 65 ? 2 : cpu >= 25 ? 1 : 0;
+    const memLvl  = mem >= 92 ? 3 : mem >= 78 ? 2 : mem >= 55 ? 1 : 0;
+    const loadLvl = loadPerCore >= 2 ? 3 : loadPerCore >= 1 ? 2 : loadPerCore >= 0.5 ? 1 : 0;
+    return Math.max(cpuLvl, memLvl, loadLvl);
+  }
+
+  function setStatus(state, detail) {
+    const s = el('status');
+    s.className = 'status st-' + state;
+    s.textContent = detail ? state + ' · ' + detail : state;
+  }
+
   // Filled-area gradient endpoints, shared by every chart: `from` paints the
   // baseline (low/cool values), `to` paints the top of the plot (high/hot).
   // Per-chart so individual graphs could diverge later; for now all green→red.
-  const GRAD_FROM = '#27c93f';  // green — low values
-  const GRAD_TO   = '#ff4d4d';  // red   — high values
+  const GRAD_FROM = '#27c93f';  // green  — low values
+  const GRAD_MID  = '#ff9f40';  // orange — mid values (≈50%)
+  const GRAD_TO   = '#ff4d4d';  // red    — high values
 
   const series = {
-    cpu:  { data: [], color: 'cpu',  unit: '%', from: GRAD_FROM, to: GRAD_TO },
-    mem:  { data: [], color: 'mem',  unit: '%', from: GRAD_FROM, to: GRAD_TO },
-    disk: { data: [], color: 'disk', unit: '%', from: GRAD_FROM, to: GRAD_TO },
+    cpu:  { data: [], color: 'cpu',  unit: '%', from: GRAD_FROM, mid: GRAD_MID, to: GRAD_TO },
+    mem:  { data: [], color: 'mem',  unit: '%', from: GRAD_FROM, mid: GRAD_MID, to: GRAD_TO },
+    disk: { data: [], color: 'disk', unit: '%', from: GRAD_FROM, mid: GRAD_MID, to: GRAD_TO },
   };
   // null in any data array represents a failed/timed-out poll at that slot.
 
   // Per-core CPU series + value labels, built lazily once we know the core count.
   const coreSeries = [];   // [{ data: [] }, …]  parallel to cpu_cores[]
   const coreValEls = [];   // matching .core-val spans
+  const coreCellEls = [];  // matching .core cell divs (for heatmap tint)
+
+  // Dark background tint for a core cell from its current load: green (light) →
+  // orange (mid) → red (heavy). Lightness stays low so the graph line on top
+  // remains legible; saturation/lightness ramp up a touch so heavy reads hotter.
+  function coreBg(v) {
+    if (v == null || isNaN(v)) return '#0e1216';
+    const p = Math.max(0, Math.min(100, v)) / 100;
+    const hue = p < 0.5 ? 120 - (120 - 30) * (p / 0.5)   // green → orange
+                        : 30 - 30 * ((p - 0.5) / 0.5);   // orange → red
+    const sat = 45 + 25 * p;   // 45% → 70%
+    const lit = 9 + 5 * p;     // 9%  → 14%
+    return 'hsl(' + hue.toFixed(0) + ',' + sat.toFixed(0) + '%,' + lit.toFixed(0) + '%)';
+  }
+
   function ensureCores(count) {
     if (coreSeries.length === count) return;
     const host = el('cores');
     host.textContent = '';
     coreSeries.length = 0;
     coreValEls.length = 0;
+    coreCellEls.length = 0;
     el('cores-count').textContent = count + (count === 1 ? ' core' : ' cores');
     for (let i = 0; i < count; i++) {
       const cell = document.createElement('div');
@@ -535,7 +627,7 @@ STATS_HTML = r"""<!doctype html>
       head.className = 'core-head';
       const name = document.createElement('span');
       name.className = 'core-name';
-      name.textContent = 'cpu' + i;
+      name.textContent = 'cpu ' + (i + 1);
       const val = document.createElement('span');
       val.className = 'core-val';
       val.textContent = '—';
@@ -547,8 +639,9 @@ STATS_HTML = r"""<!doctype html>
       cell.appendChild(head);
       cell.appendChild(svg);
       host.appendChild(cell);
-      coreSeries.push({ data: [], color: 'cpu', unit: '%', from: GRAD_FROM, to: GRAD_TO });
+      coreSeries.push({ data: [], color: 'cpu', unit: '%', from: GRAD_FROM, mid: GRAD_MID, to: GRAD_TO });
       coreValEls.push(val);
+      coreCellEls.push(cell);
     }
   }
 
@@ -736,8 +829,10 @@ STATS_HTML = r"""<!doctype html>
       id: gradId, gradientUnits: 'userSpaceOnUse',
       x1: 0, y1: yAt(gradMax), x2: 0, y2: yAt(0),
     });
-    grad.appendChild(svgEl('stop', { offset: '0', 'stop-color': ser.to,   'stop-opacity': '0.32' }));
-    grad.appendChild(svgEl('stop', { offset: '1', 'stop-color': ser.from, 'stop-opacity': '0.32' }));
+    // offset 0 = top (value gradMax) → 0.5 = mid (value gradMax/2) → 1 = value 0.
+    grad.appendChild(svgEl('stop', { offset: '0',   'stop-color': ser.to,  'stop-opacity': '0.32' }));
+    grad.appendChild(svgEl('stop', { offset: '0.5', 'stop-color': ser.mid, 'stop-opacity': '0.32' }));
+    grad.appendChild(svgEl('stop', { offset: '1',   'stop-color': ser.from, 'stop-opacity': '0.32' }));
     const defs = svgEl('defs', {});
     defs.appendChild(grad);
     svg.appendChild(defs);
@@ -855,6 +950,7 @@ STATS_HTML = r"""<!doctype html>
     pollSec = parseFloat(pollSel.value);
     pollMs = pollSec * 1000;
     MAX_POINTS = Math.max(2, Math.round(windowMin * 60 / pollSec));
+    applyPulseTiming();
     persist(POLL_KEY, pollSec);
     trimAll();
     // Restart the poll loop immediately at the new cadence.
@@ -902,6 +998,7 @@ STATS_HTML = r"""<!doctype html>
 
   async function tick() {
     let ok = false;
+    let statusState = 'hung', statusDetail = null;
     try {
       const r = await fetchWithTimeout('/stats?format=json', FETCH_TIMEOUT_MS);
       if (!r.ok) throw new Error('http ' + r.status);
@@ -916,6 +1013,7 @@ STATS_HTML = r"""<!doctype html>
         for (let i = 0; i < cores.length; i++) {
           pushCore(i, cores[i]);
           coreValEls[i].textContent = cores[i].toFixed(0) + '%';
+          coreCellEls[i].style.background = coreBg(cores[i]);
         }
       }
 
@@ -927,6 +1025,15 @@ STATS_HTML = r"""<!doctype html>
       el('disk-now').textContent = j.disk_percent.toFixed(1) + '%';
       el('disk-sub').textContent = j.disk_used_gb.toFixed(2) + ' / ' +
                                    j.disk_total_gb.toFixed(2) + ' GB';
+
+      const load1 = (j.load_average && typeof j.load_average['1min'] === 'number')
+        ? j.load_average['1min'] : null;
+      const coreCount = (typeof j.cpu_count === 'number' && j.cpu_count > 0) ? j.cpu_count : 1;
+      const loadPerCore = load1 == null ? 0 : load1 / coreCount;
+      // A responsive but wildly over-subscribed box reads as "hung" too.
+      statusState = loadPerCore >= 4
+        ? 'hung'
+        : LOAD_STATES[classifyLoad(j.cpu_percent, j.memory_percent, loadPerCore)];
 
       consecutiveFailures = 0;
       lastError = null;
@@ -943,12 +1050,11 @@ STATS_HTML = r"""<!doctype html>
       el('disk-now').textContent = '—';
     }
 
-    const s = el('status');
     if (ok) {
-      s.textContent = 'live'; s.className = 'ok';
+      setStatus(statusState, statusDetail);
     } else {
-      s.textContent = 'stalled (' + consecutiveFailures + ' polls, ' + lastError + ')';
-      s.className = 'err';
+      // No response from the box → hung, with the failing-poll count + reason.
+      setStatus('hung', consecutiveFailures + ' polls · ' + lastError);
     }
     renderAll();
 
@@ -956,9 +1062,27 @@ STATS_HTML = r"""<!doctype html>
   }
 
   let pollTimer = null;
+  let paused = false;
   function scheduleNext(delay) {
+    if (paused) return;            // no polling while paused — graphs stay frozen
     pollTimer = setTimeout(tick, delay == null ? pollMs : delay);
   }
+
+  // Pause/play: stops hitting the server and freezes the graphs (nothing is
+  // pushed or re-rendered while paused); play resumes the loop immediately.
+  const pauseBtn = el('pause-btn');
+  function setPaused(p) {
+    paused = p;
+    clearTimeout(pollTimer);
+    document.body.classList.toggle('paused', p);
+    pauseBtn.classList.toggle('paused', p);
+    pauseBtn.textContent = p ? '▶' : '⏸';
+    pauseBtn.title = p ? 'Resume polling' : 'Pause polling';
+    pauseBtn.setAttribute('aria-label', pauseBtn.title);
+    pauseBtn.setAttribute('aria-pressed', String(p));
+    if (!p) scheduleNext(0);       // resume: poll right away
+  }
+  pauseBtn.addEventListener('click', () => setPaused(!paused));
 
   scheduleNext(0);
 })();
@@ -969,7 +1093,7 @@ STATS_HTML = r"""<!doctype html>
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "vitals/1.0"
+    server_version = "Server-Vitals/1.0"
 
     def log_message(self, fmt, *args):
         return

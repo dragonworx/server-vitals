@@ -1,5 +1,5 @@
-# vitals — convenience targets. Most wrap install.sh / systemctl.
-SERVICE := vitals
+# Server Vitals — convenience targets. Most wrap install.sh / systemctl.
+SERVICE := server-vitals
 
 .PHONY: help install install-nginx uninstall run check start stop restart deploy status logs
 
@@ -17,10 +17,10 @@ uninstall: ## Stop + remove the service (sudo)
 	@./uninstall.sh
 
 run: ## Run in the foreground for local dev (no install)
-	@python3 vitals.py
+	@python3 server-vitals.py
 
 check: ## Syntax-check the Python source
-	@python3 -m py_compile vitals.py && echo "ok: vitals.py compiles"
+	@python3 -m py_compile server-vitals.py && echo "ok: server-vitals.py compiles"
 
 start: ## Start the installed service
 	@sudo systemctl start $(SERVICE) && systemctl is-active $(SERVICE)
@@ -31,7 +31,7 @@ stop: ## Stop the installed service
 restart: ## Restart the installed service (no code redeploy)
 	@sudo systemctl restart $(SERVICE) && systemctl is-active $(SERVICE)
 
-deploy: ## Rebuild: reinstall current vitals.py + restart (sudo)
+deploy: ## Rebuild: reinstall current server-vitals.py + restart (sudo)
 	@./install.sh
 
 status: ## Show service status

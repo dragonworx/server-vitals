@@ -1,6 +1,6 @@
-# 📈 vitals
+# Server Vitals
 
-A tiny, dependency-free server vitals endpoint. One Python file, standard
+A tiny, dependency-free server health endpoint. One Python file, standard
 library only — no pip installs, no virtualenv. It exposes a few JSON health
 endpoints and a self-contained live **stats dashboard** (CPU incl. per-core,
 memory, disk) that you can drop behind nginx or hit directly.
@@ -30,7 +30,7 @@ selectable from the header and persisted in `localStorage`.
 
 ## Why a systemd service, not a Docker container
 
-vitals is a **host-monitoring agent**, so it is deployed as a plain process
+Server Vitals is a **host-monitoring agent**, so it is deployed as a plain process
 under systemd — *not* in a container. This is deliberate. The whole job of the
 app is to observe the host it runs on:
 
@@ -49,7 +49,7 @@ network stack, separate from the host. That is exactly the wrong default here:
 | Lifecycle / autostart / restart | systemd (`enable --now`, `Restart=`) | Docker daemon (`restart: unless-stopped`) |
 | Footprint | ~none — one stdlib Python process | image build + daemon overhead |
 
-To run vitals usefully in a container you would have to dismantle that
+To run Server Vitals usefully in a container you would have to dismantle that
 isolation (`--pid=host`, `-v /proc:/host/proc:ro`, `-v /:/rootfs:ro`, expose the
 systemd/journal sockets) **and** rewrite the metric paths to read `/host/proc/*`
 — more moving parts for a strictly less capable result. So it ships as a
@@ -65,8 +65,8 @@ the host (web apps, databases); a host agent is the opposite case.
 **From a checkout** (recommended):
 
 ```bash
-git clone <repo-url> vitals
-cd vitals
+git clone https://github.com/dragonworx/server-vitals.git
+cd server-vitals
 sudo ./install.sh            # or: make install
 ```
 
@@ -76,34 +76,35 @@ Add `--with-nginx` to also install the reverse-proxy snippet:
 sudo ./install.sh --with-nginx
 ```
 
-**One-liner** (when hosted — point it at the repo's raw base URL):
+**One-liner** (fetches the sources straight from GitHub):
 
 ```bash
-curl -fsSL <raw>/install.sh | VITALS_RAW_BASE=<raw> sudo -E bash
+RAW=https://raw.githubusercontent.com/dragonworx/server-vitals/main
+curl -fsSL $RAW/install.sh | VITALS_RAW_BASE=$RAW sudo -E bash
 ```
 
-The installer copies `vitals.py` to `/usr/local/bin`, installs the
-`vitals` systemd unit, enables + starts it, and verifies `/health`
+The installer copies `server-vitals.py` to `/usr/local/bin`, installs the
+`server-vitals` systemd unit, enables + starts it, and verifies `/health`
 responds.
 
 ### install.sh options
 
 | Option          | Effect                                                |
 | --------------- | ----------------------------------------------------- |
-| `--with-nginx`  | also install `nginx/vitals.conf` and reload nginx     |
+| `--with-nginx`  | also install `nginx/server-vitals.conf` and reload nginx     |
 | `--no-start`    | install files but don't enable/start the service      |
 | `--user USER`   | run the service as `USER` (default `www-data`)        |
 
 ## nginx integration
 
-The snippet at [`nginx/vitals.conf`](nginx/vitals.conf)
+The snippet at [`nginx/server-vitals.conf`](nginx/server-vitals.conf)
 proxies `/health`, `/code-server`, and `/stats` to `127.0.0.1:9999`. After
 installing it (`--with-nginx`), `include` it in any server block:
 
 ```nginx
 server {
     # ...
-    include snippets/vitals.conf;
+    include snippets/server-vitals.conf;
 }
 ```
 
@@ -112,7 +113,7 @@ Then `sudo nginx -t && sudo systemctl reload nginx`.
 ## Run locally (no install)
 
 ```bash
-make run          # python3 vitals.py — serves on 127.0.0.1:9999
+make run          # python3 server-vitals.py — serves on 127.0.0.1:9999
 ```
 
 Open <http://127.0.0.1:9999/stats>.
@@ -123,14 +124,14 @@ Open <http://127.0.0.1:9999/stats>.
 make start        # start the service
 make stop         # stop the service
 make restart      # restart (no code redeploy)
-make deploy       # rebuild: reinstall current vitals.py + restart
+make deploy       # rebuild: reinstall current server-vitals.py + restart
 make status       # systemctl status
-make logs         # journalctl -u vitals -f
+make logs         # journalctl -u server-vitals -f
 make check        # py_compile the source
 ```
 
 Use `make restart` to bounce the running service; use `make deploy` after
-editing `vitals.py` to push the new code and restart in one step.
+editing `server-vitals.py` to push the new code and restart in one step.
 
 ### Via Bun
 
@@ -141,9 +142,9 @@ is not needed:
 ```bash
 bun run start      # or: bun start
 bun run restart
-bun run deploy     # rebuild: reinstall vitals.py + restart
+bun run deploy     # rebuild: reinstall server-vitals.py + restart
 bun run logs
-bun run dev        # run in the foreground (python3 vitals.py)
+bun run dev        # run in the foreground (python3 server-vitals.py)
 ```
 
 `start` / `stop` / `restart` / `deploy` shell out to `sudo systemctl`, so
@@ -159,7 +160,7 @@ sudo ./uninstall.sh --purge-nginx   # also remove the nginx snippet
 
 ## Configuration
 
-Knobs live at the top of `vitals.py`:
+Knobs live at the top of `server-vitals.py`:
 
 - `LISTEN` — bind address/port (default `127.0.0.1:9999`)
 - `CODE_SERVER_UNIT` / `CODE_SERVER_PORT` / `CODE_SERVER_HEALTHZ` — the unit the

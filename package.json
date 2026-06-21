@@ -1,9 +1,19 @@
 {
-  "name": "vitals",
+  "name": "server-vitals",
   "version": "1.0.0",
-  "description": "Lightweight server vitals endpoint — a host-monitoring agent (not a container). See README.",
+  "description": "Server Vitals — a lightweight host-monitoring agent (not a container). See README.",
   "private": true,
-  "comment": "vitals is dependency-free Python; this file exists ONLY so `bun run <name>` can drive the service. Each script wraps the matching Makefile target, which stays the source of truth. No deps, so no `bun install` is needed.",
+  "author": "dragonworx",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dragonworx/server-vitals.git"
+  },
+  "homepage": "https://github.com/dragonworx/server-vitals#readme",
+  "bugs": {
+    "url": "https://github.com/dragonworx/server-vitals/issues"
+  },
+  "comment": "Server Vitals is dependency-free Python; this file exists ONLY so `bun run <name>` can drive the service. Each script wraps the matching Makefile target, which stays the source of truth. No deps, so no `bun install` is needed.",
   "scripts": {
     "start": "make start",
     "stop": "make stop",
