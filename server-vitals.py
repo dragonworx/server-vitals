@@ -532,11 +532,13 @@ STATS_HTML = r"""<!doctype html>
     return '-' + (m % 1 === 0 ? m.toFixed(0) : m.toFixed(1)) + 'm';
   }
 
-  // Absolute wall-clock time (HH:MM) for a given epoch-ms instant.
+  // Absolute wall-clock time (12-hour, e.g. "2:32pm") for an epoch-ms instant.
   function fmtClock(ms) {
     const d = new Date(ms);
-    return String(d.getHours()).padStart(2, '0') + ':' +
-           String(d.getMinutes()).padStart(2, '0');
+    const h24 = d.getHours();
+    const h12 = h24 % 12 || 12;
+    const ampm = h24 < 12 ? 'am' : 'pm';
+    return h12 + ':' + String(d.getMinutes()).padStart(2, '0') + ampm;
   }
 
   // Label a sample only when it dominates a ±WIN window AND its prominence
