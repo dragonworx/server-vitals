@@ -194,3 +194,7 @@ After editing, run `make deploy` to push the new code and restart (or
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+---
+
+<p align="center">Made with ❤️ by dragonworx</p>
