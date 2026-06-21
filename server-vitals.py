@@ -766,9 +766,11 @@ STATS_HTML = r"""<!doctype html>
   }
 
   function renderAll() {
-    render('cpu-svg',  series.cpu);
-    render('mem-svg',  series.mem);
-    render('disk-svg', series.disk);
+    // Percentages share a fixed 0..100 scale so heights map directly to load
+    // and never clip to the data's own min/max.
+    render('cpu-svg',  series.cpu,  { fixedMax: 100 });
+    render('mem-svg',  series.mem,  { fixedMax: 100 });
+    render('disk-svg', series.disk, { fixedMax: 100 });
     for (let i = 0; i < coreSeries.length; i++) {
       render('core-svg-' + i, coreSeries[i], { compact: true, fixedMax: 100, yAxis: true });
     }
