@@ -279,6 +279,8 @@ STATS_HTML = r"""<!doctype html>
   .grid { stroke: #20262d; stroke-width: 1; }
   .axis { fill: #6c7886; font-size: 10px; font-family: inherit; }
   .axis.axis-mini { font-size: 9px; }
+  /* Absolute clock time sits a shade lighter than the relative age. */
+  .axis-abs { fill: #97a3b2; }
   .line-cpu  { stroke: #6ddc8a; }
   .line-mem  { stroke: #6db5dc; }
   .line-disk { stroke: #dcb86d; }
@@ -646,8 +648,8 @@ STATS_HTML = r"""<!doctype html>
     }
 
     // x-axis labels — the plot spans the full configured window. Five evenly
-    // spaced markers, each showing relative age plus the absolute clock time in
-    // brackets, e.g. "-5m (14:32)".
+    // spaced markers, each showing relative age plus the absolute clock time
+    // (the absolute part in a lighter shade), e.g. "-5m 2:32pm".
     const windowSec = windowMin * 60;
     const nowMs = Date.now();
     const TICKS = 5;
@@ -657,7 +659,8 @@ STATS_HTML = r"""<!doctype html>
       const anchor = i === 0 ? 'start' : i === TICKS - 1 ? 'end' : 'middle';
       return {
         x: PAD_L + PLOT_W * frac,
-        t: fmtAge(ageSec) + ' (' + fmtClock(nowMs - ageSec * 1000) + ')',
+        rel: fmtAge(ageSec),
+        abs: fmtClock(nowMs - ageSec * 1000),
         anchor,
       };
     });
@@ -665,7 +668,8 @@ STATS_HTML = r"""<!doctype html>
       const t = svgEl('text', {
         x: l.x, y: H - 4, class: 'axis', 'text-anchor': l.anchor,
       });
-      t.textContent = l.t;
+      t.appendChild(svgEl('tspan', {})).textContent = l.rel + ' ';
+      t.appendChild(svgEl('tspan', { class: 'axis-abs' })).textContent = l.abs;
       svg.appendChild(t);
     }
 
