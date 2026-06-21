@@ -271,6 +271,10 @@ STATS_HTML = r"""<!doctype html>
     align-items: baseline; margin-bottom: 4px; }
   .panel-title { font-size: 12px; letter-spacing: .06em; text-transform: uppercase;
     color: #9ba6b2; }
+  /* Tint each panel's title to match its graph keyline. */
+  #cpu-panel  .panel-title { color: #6ddc8a; }
+  #mem-panel  .panel-title { color: #6db5dc; }
+  #disk-panel .panel-title { color: #dcb86d; }
   .panel-value { font-size: 13px; color: #e7ebf0; }
   .panel-value .sub { color: #6c7886; margin-left: 8px; font-size: 11px; }
   svg { display: block; width: 100%; overflow: visible; }
