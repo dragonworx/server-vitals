@@ -532,6 +532,13 @@ STATS_HTML = r"""<!doctype html>
     return '-' + (m % 1 === 0 ? m.toFixed(0) : m.toFixed(1)) + 'm';
   }
 
+  // Absolute wall-clock time (HH:MM) for a given epoch-ms instant.
+  function fmtClock(ms) {
+    const d = new Date(ms);
+    return String(d.getHours()).padStart(2, '0') + ':' +
+           String(d.getMinutes()).padStart(2, '0');
+  }
+
   // Label a sample only when it dominates a ±WIN window AND its prominence
   // (apex - lowest neighbor in window) clears max(MIN_ABS, PROM × y-span).
   // The window cap forces ≥WIN-sample spacing between labels; the prominence
@@ -636,13 +643,22 @@ STATS_HTML = r"""<!doctype html>
       }
     }
 
-    // x-axis labels — the plot spans the full configured window.
+    // x-axis labels — the plot spans the full configured window. Five evenly
+    // spaced markers, each showing relative age plus the absolute clock time in
+    // brackets, e.g. "-5m (14:32)".
     const windowSec = windowMin * 60;
-    const xLabels = compact ? [] : [
-      { x: W - PAD_R, t: 'now', anchor: 'end' },
-      { x: PAD_L + PLOT_W / 2, t: fmtAge(windowSec / 2), anchor: 'middle' },
-      { x: PAD_L, t: fmtAge(windowSec), anchor: 'start' },
-    ];
+    const nowMs = Date.now();
+    const TICKS = 5;
+    const xLabels = compact ? [] : Array.from({ length: TICKS }, (_, i) => {
+      const frac = i / (TICKS - 1);           // 0 (oldest) .. 1 (now)
+      const ageSec = windowSec * (1 - frac);
+      const anchor = i === 0 ? 'start' : i === TICKS - 1 ? 'end' : 'middle';
+      return {
+        x: PAD_L + PLOT_W * frac,
+        t: fmtAge(ageSec) + ' (' + fmtClock(nowMs - ageSec * 1000) + ')',
+        anchor,
+      };
+    });
     for (const l of xLabels) {
       const t = svgEl('text', {
         x: l.x, y: H - 4, class: 'axis', 'text-anchor': l.anchor,
