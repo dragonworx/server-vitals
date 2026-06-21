@@ -308,7 +308,7 @@ STATS_HTML = r"""<!doctype html>
     padding: 4px 7px 2px; display: flex; flex-direction: column; min-height: 0;
     transition: background 600ms linear; }
   .core-head { flex: 0 0 auto; display: flex; justify-content: space-between;
-    align-items: baseline; }
+    align-items: baseline; margin-bottom: 3px; }
   .core-head .core-name { font-size: 10px; letter-spacing: .04em;
     text-transform: uppercase; color: #ffffff; }
   .core-head .core-val { font-size: 11px; color: #b8eec5; }
