@@ -120,6 +120,24 @@ example.com {
 
 Then `sudo caddy validate && sudo systemctl reload caddy`.
 
+## Security
+
+The endpoints have **no built-in authentication** — they expose host CPU,
+memory, disk, load, and uptime, which is reconnaissance-grade information. The
+server only binds `127.0.0.1`, so it is not reachable from outside the box until
+*you* reverse-proxy it. When you do, restrict access at the proxy:
+
+- The shipped [`nginx/server-vitals.conf`](nginx/server-vitals.conf) snippet is
+  locked to `allow 127.0.0.1; deny all;` by default — widen the allowlist to your
+  office/VPN range, or add `auth_basic`, before exposing it publicly.
+- For Caddy, gate the routes with `@allowed` matchers or `basic_auth`.
+
+Other hardening already in place: the service runs as an unprivileged user under
+a locked-down systemd unit (`NoNewPrivileges`, `ProtectSystem=strict`,
+`ProtectHome`, `PrivateTmp`); requests are read-only `GET`s; idle/slow client
+connections are dropped after a short timeout; and internal errors return a
+generic message (details go to the journal, never the client).
+
 ## Run locally (no install)
 
 ```bash
@@ -155,6 +173,9 @@ sudo ./uninstall.sh --purge-nginx   # also remove the nginx snippet
 Knobs live at the top of `server-vitals.py`:
 
 - `LISTEN` — bind address/port (default `127.0.0.1:9999`)
+- `SAMPLE_INTERVAL` — seconds between background CPU samples (default `0.25`)
+- `REQUEST_TIMEOUT` — seconds before an idle/slow client connection is dropped
+  (default `5`)
 
 After editing, run `make deploy` to push the new code and restart (or
 `make restart` if you only need to bounce the running service).

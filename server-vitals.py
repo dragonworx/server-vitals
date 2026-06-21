@@ -9,9 +9,13 @@ import json
 import os
 import threading
 import time
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs
 
 LISTEN = ("127.0.0.1", 9999)
+SAMPLE_INTERVAL = 0.25  # seconds between background CPU samples
+REQUEST_TIMEOUT = 5     # seconds before an idle/slow client connection is dropped
 
 
 def read_meminfo():
@@ -44,85 +48,109 @@ def memory_stats():
     }
 
 
-def cpu_percent(interval=0.3):
-    def snap():
-        with open("/proc/stat") as f:
-            fields = [int(x) for x in f.readline().split()[1:]]
-        idle = fields[3] + (fields[4] if len(fields) > 4 else 0)  # idle + iowait
-        return idle, sum(fields)
+class CpuSampler:
+    """Samples /proc/stat on a background thread at a fixed cadence and publishes
+    the latest aggregate + per-core CPU percentages.
 
-    idle1, total1 = snap()
-    time.sleep(interval)
-    idle2, total2 = snap()
-    dt = total2 - total1
-    if dt <= 0:
-        return 0.0
-    return round((1 - (idle2 - idle1) / dt) * 100, 1)
+    CPU% is inherently a *delta* between two readings. Computing that delta
+    per-request would mean every endpoint mutates shared "previous sample" state,
+    so two concurrent clients (e.g. two dashboard tabs, or the proxy's health
+    check racing a poll) would each measure against the other's reading and get
+    garbage — and `/health` would block its worker thread on a sampling sleep.
 
-
-_cpu_state = {"idle": None, "total": None}
-_cpu_lock = threading.Lock()
-
-
-def cpu_percent_delta():
-    """CPU% computed against the last sample. Non-blocking; for /stats polling."""
-    with open("/proc/stat") as f:
-        fields = [int(x) for x in f.readline().split()[1:]]
-    idle_now = fields[3] + (fields[4] if len(fields) > 4 else 0)
-    total_now = sum(fields)
-    with _cpu_lock:
-        prev_idle = _cpu_state["idle"]
-        prev_total = _cpu_state["total"]
-        _cpu_state["idle"] = idle_now
-        _cpu_state["total"] = total_now
-    if prev_idle is None:
-        return 0.0
-    dt = total_now - prev_total
-    if dt <= 0:
-        return 0.0
-    return round((1 - (idle_now - prev_idle) / dt) * 100, 1)
-
-
-_cpu_core_state = {}  # core index -> (idle, total) from the previous sample
-_cpu_core_lock = threading.Lock()
-
-
-def cpu_core_percents():
-    """Per-core CPU% vs the last sample, indexed by core (cpu0, cpu1, …).
-
-    Mirrors cpu_percent_delta() but for each `cpuN` line in /proc/stat, so the
-    /stats client can draw one graph per core. Returns a list ordered by core
-    index; first call (no prior sample) yields zeros.
+    Instead a single thread owns the sampling. Every request just reads the warm
+    snapshot under a lock: non-blocking, consistent across all clients, and the
+    measurement window is the steady SAMPLE_INTERVAL regardless of poll rate.
     """
-    samples = []
-    with open("/proc/stat") as f:
-        for line in f:
-            if not line.startswith("cpu"):
-                # /proc/stat lists all cpuN lines before the first non-cpu line.
-                break
-            parts = line.split()
-            label = parts[0]
-            if label == "cpu":
-                continue  # aggregate — handled by cpu_percent_delta()
-            try:
-                idx = int(label[3:])
-            except ValueError:
-                continue
-            fields = [int(x) for x in parts[1:]]
-            idle = fields[3] + (fields[4] if len(fields) > 4 else 0)
-            samples.append((idx, idle, sum(fields)))
 
-    out = []
-    with _cpu_core_lock:
-        for idx, idle, total in samples:
-            prev = _cpu_core_state.get(idx)
-            _cpu_core_state[idx] = (idle, total)
-            if prev is None:
-                out.append(0.0)
-                continue
-            dt = total - prev[1]
-            out.append(round((1 - (idle - prev[0]) / dt) * 100, 1) if dt > 0 else 0.0)
-    return out
+    def __init__(self, interval=SAMPLE_INTERVAL):
+        self.interval = interval
+        self._lock = threading.Lock()
+        self._percent = 0.0
+        self._cores = []
+        self._prev_idle = None
+        self._prev_total = None
+        self._prev_cores = {}  # core index -> (idle, total) from the prior sample
+
+    @staticmethod
+    def _read_proc_stat():
+        """Return (aggregate, cores) where aggregate is (idle, total) for the
+        `cpu` line and cores is a list of (index, idle, total) for each `cpuN`."""
+        aggregate = None
+        cores = []
+        with open("/proc/stat") as f:
+            for line in f:
+                if not line.startswith("cpu"):
+                    # /proc/stat lists every cpuN line before the first non-cpu line.
+                    break
+                parts = line.split()
+                fields = [int(x) for x in parts[1:]]
+                idle = fields[3] + (fields[4] if len(fields) > 4 else 0)  # idle + iowait
+                total = sum(fields)
+                if parts[0] == "cpu":
+                    aggregate = (idle, total)
+                    continue
+                try:
+                    idx = int(parts[0][3:])
+                except ValueError:
+                    continue
+                cores.append((idx, idle, total))
+        return aggregate, cores
+
+    @staticmethod
+    def _delta(idle, total, prev):
+        if prev is None:
+            return 0.0
+        dt = total - prev[1]
+        if dt <= 0:
+            return 0.0
+        return round((1 - (idle - prev[0]) / dt) * 100, 1)
+
+    def _sample(self):
+        aggregate, cores = self._read_proc_stat()
+
+        percent = 0.0
+        if aggregate is not None:
+            idle, total = aggregate
+            percent = self._delta(idle, total, (self._prev_idle, self._prev_total)
+                                  if self._prev_idle is not None else None)
+            self._prev_idle, self._prev_total = idle, total
+
+        core_out = []
+        for idx, idle, total in cores:
+            core_out.append(self._delta(idle, total, self._prev_cores.get(idx)))
+            self._prev_cores[idx] = (idle, total)
+
+        with self._lock:
+            self._percent = percent
+            self._cores = core_out
+
+    def _run(self):
+        # Prime the previous reading so the first published delta is real.
+        try:
+            self._sample()
+        except Exception:
+            traceback.print_exc()
+        while True:
+            time.sleep(self.interval)
+            try:
+                self._sample()
+            except Exception:
+                # A transient /proc read error must not kill the sampler thread;
+                # log it and keep the last good snapshot until the next tick.
+                traceback.print_exc()
+
+    def start(self):
+        threading.Thread(target=self._run, name="cpu-sampler", daemon=True).start()
+        return self
+
+    def snapshot(self):
+        """Latest (aggregate_percent, [per_core_percent, …]); never blocks on I/O."""
+        with self._lock:
+            return self._percent, list(self._cores)
+
+
+_sampler = CpuSampler()
 
 
 def cpu_count():
@@ -166,13 +194,14 @@ def fmt_uptime(seconds):
 
 
 def stats_payload():
+    cpu, cores = _sampler.snapshot()
     mem = memory_stats()
     disk = disk_usage("/")
     return {
         "timestamp": time.time(),
-        "cpu_percent": cpu_percent_delta(),
+        "cpu_percent": cpu,
         "cpu_count": cpu_count(),
-        "cpu_cores": cpu_core_percents(),
+        "cpu_cores": cores,
         "load_average": loadavg(),
         "memory_percent": mem["percent"],
         "memory_used_mb": mem["used_mb"],
@@ -184,17 +213,18 @@ def stats_payload():
 
 
 def health_payload():
-    cpu = cpu_percent()
+    cpu, _ = _sampler.snapshot()
     mem = memory_stats()
     disk = disk_usage("/")
+    uptime = system_uptime()
     status = "ok"
     if cpu >= 95 or mem["percent"] >= 95 or disk["percent"] >= 95:
         status = "degraded"
     return {
         "status": status,
         "timestamp": int(time.time()),
-        "uptime_seconds": int(system_uptime()),
-        "uptime_human": fmt_uptime(system_uptime()),
+        "uptime_seconds": int(uptime),
+        "uptime_human": fmt_uptime(uptime),
         "cpu": {"percent": cpu, "cores": cpu_count()},
         "memory": mem,
         "disk": disk,
@@ -968,50 +998,71 @@ STATS_HTML = r"""<!doctype html>
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "Server-Vitals/1.0"
+    # HTTP/1.1 keeps the connection alive so the dashboard's frequent polls reuse
+    # one TCP connection instead of reconnecting every tick. Safe because every
+    # response carries a Content-Length.
+    protocol_version = "HTTP/1.1"
+    # Drop a client that opens a connection but stalls (slowloris), rather than
+    # pinning a worker thread on it indefinitely.
+    timeout = REQUEST_TIMEOUT
 
     def log_message(self, fmt, *args):
         return
 
-    def _send_json(self, payload, code=200):
-        body = json.dumps(payload, indent=2, default=str).encode()
+    def _send(self, body, content_type, code=200):
         self.send_response(code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_json(self, payload, code=200, indent=None):
+        body = json.dumps(payload, indent=indent, default=str).encode("utf-8")
+        self._send(body, "application/json; charset=utf-8", code)
 
     def _send_html(self, html, code=200):
-        body = html.encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+        self._send(html.encode("utf-8"), "text/html; charset=utf-8", code)
 
     def do_GET(self):
-        raw = self.path
-        path = raw.split("?", 1)[0].rstrip("/")
-        query = raw.split("?", 1)[1] if "?" in raw else ""
+        path, _, query = self.path.partition("?")
+        path = path.rstrip("/")
+        params = parse_qs(query)
         try:
             if path in ("/health", ""):
-                self._send_json(health_payload())
+                self._send_json(health_payload(), indent=2)  # pretty for human curl
             elif path == "/stats":
-                if "format=json" in query:
+                if params.get("format") == ["json"]:
                     self._send_json(stats_payload())
                 else:
                     self._send_html(STATS_HTML)
             else:
-                self._send_json({"error": "not found", "path": self.path}, code=404)
-        except Exception as e:
-            self._send_json({"error": "internal", "detail": str(e)}, code=500)
+                self._send_json({"error": "not found"}, code=404)
+        except (BrokenPipeError, ConnectionResetError):
+            # Client went away mid-response (e.g. a closed dashboard tab). Nothing
+            # to send; just let this connection drop.
+            self.close_connection = True
+        except Exception:
+            # Log the detail to the journal for the operator; never leak internal
+            # exception text to the client.
+            traceback.print_exc()
+            try:
+                self._send_json({"error": "internal server error"}, code=500)
+            except Exception:
+                self.close_connection = True
 
 
 def main():
+    _sampler.start()
     server = ThreadingHTTPServer(LISTEN, Handler)
     server.daemon_threads = True
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
 
 
 if __name__ == "__main__":

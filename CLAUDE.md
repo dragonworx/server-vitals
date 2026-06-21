@@ -38,16 +38,22 @@ Everything is in `server-vitals.py`, in three layers:
    `/proc/stat`, `/proc/meminfo`, `/proc/loadavg`, and `statvfs("/")`. This direct
    host access is the whole reason it's a service and not a container.
 
-2. **CPU sampling is delta-based and stateful.** `cpu_percent_delta()` and
-   `cpu_core_percents()` compute usage against the *previous* sample stored in
-   module-level globals (`_cpu_state`, `_cpu_core_state`), guarded by locks because
-   the server is threaded. They are non-blocking — designed for the `/stats` client
-   polling repeatedly. The first call after start returns 0.0 (no prior sample).
-   `cpu_percent(interval=…)` is the separate *blocking* variant used by `/health`.
+2. **CPU sampling runs on a background thread.** `CpuSampler` (started in
+   `main()` as the module global `_sampler`) reads `/proc/stat` every
+   `SAMPLE_INTERVAL` seconds, computes the aggregate + per-core deltas against its
+   *own* previous reading, and publishes the result under a lock. Endpoints call
+   `_sampler.snapshot()` — non-blocking, and consistent across concurrent clients
+   (no request mutates sampling state, so multiple dashboard tabs / the proxy
+   health check no longer corrupt each other's deltas). CPU% is a delta between
+   two readings, so the first published value after start is 0.0.
 
 3. **HTTP layer** — `ThreadingHTTPServer` + `Handler.do_GET` routes three things:
-   `/health` (JSON summary, blocking CPU read), `/stats` (the dashboard HTML), and
-   `/stats?format=json` (a live JSON sample using the delta collectors).
+   `/health` (JSON summary), `/stats` (the dashboard HTML), and
+   `/stats?format=json` (a live JSON sample). All read the warm CPU snapshot.
+   The handler sets `protocol_version = "HTTP/1.1"` (keep-alive — every response
+   carries a Content-Length) and a socket `timeout` (drops slow/idle clients).
+   Internal errors are logged to the journal and return a generic message; the
+   request path is never reflected back.
 
 `stats_payload()` and `health_payload()` assemble the JSON; `Handler` only routes
 and serializes.
