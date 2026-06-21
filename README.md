@@ -143,24 +143,6 @@ make check        # py_compile the source
 Use `make restart` to bounce the running service; use `make deploy` after
 editing `server-vitals.py` to push the new code and restart in one step.
 
-### Via Bun
-
-If you prefer Bun, the same targets are exposed as `package.json` scripts that
-just wrap the Makefile — so there are **no JS dependencies** and `bun install`
-is not needed:
-
-```bash
-bun run start      # or: bun start
-bun run restart
-bun run deploy     # rebuild: reinstall server-vitals.py + restart
-bun run logs
-bun run dev        # run in the foreground (python3 server-vitals.py)
-```
-
-`start` / `stop` / `restart` / `deploy` shell out to `sudo systemctl`, so
-they'll prompt for your sudo password. The Makefile stays the source of truth;
-Bun is just an alternate front door.
-
 ## Uninstall
 
 ```bash
