@@ -1,5 +1,11 @@
 # Server Vitals
 
+<p align="center">
+  <img src="doc/server-vitals-screenshot-desktop.webp" alt="Server Vitals dashboard (desktop)" width="100%">
+  <br>
+  <img src="doc/server-vitals-screenshot-mobile.webp" alt="Server Vitals dashboard (mobile)" width="280">
+</p>
+
 A tiny, dependency-free server health endpoint. One Python file, standard
 library only — no pip installs, no virtualenv. It exposes a few JSON health
 endpoints and a self-contained live **stats dashboard** (CPU incl. per-core,
