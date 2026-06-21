@@ -268,15 +268,19 @@ STATS_HTML = r"""<!doctype html>
   @media (prefers-reduced-motion: reduce) {
     header h1 { animation: none; -webkit-text-fill-color: #cfd6de; color: #cfd6de; }
   }
-  header .meta { font-size: 12px; color: #6c7886; white-space: nowrap; }
-  /* Fine-grained server load status — greens → oranges → reds. */
-  header .meta .status { font-weight: 600; letter-spacing: .05em;
-    text-transform: uppercase; }
-  header .meta .st-idle     { color: #6ddc8a; }   /* green  — at rest        */
-  header .meta .st-light    { color: #b6e36a; }   /* green  — light load     */
-  header .meta .st-heavy    { color: #ffae57; }   /* orange — heavy load     */
-  header .meta .st-critical { color: #ff6b6b; }   /* red    — near limits    */
-  header .meta .st-hung     { color: #e23b3b; animation: hung-blink 1s steps(2) infinite; }
+  /* Status row under the banner: a flat dark-grey strip with the status word
+     (white) centred, followed by each metric (C/M/D) tinted by its own value on
+     a green→orange→red ramp (0% = green). */
+  #statusbar { flex: 0 0 auto; height: 30px; display: flex;
+    align-items: center; justify-content: center;
+    background: #21262d; border-bottom: 1px solid #2b323a; }
+  #statusbar .status { margin: 0; pointer-events: none; white-space: nowrap;
+    font-size: 12px; font-weight: 700; letter-spacing: .14em;
+    text-transform: uppercase; color: #f4f6f8;
+    /* thin black drop shadow, +1/+1 offset, 15% black */
+    text-shadow: 1px 1px 0 rgba(0,0,0,.15); }
+  #statusbar .status .st-metric { color: inherit; }
+  #statusbar .status.st-hung { animation: hung-blink 1s steps(2) infinite; }
   @keyframes hung-blink { 50% { opacity: .35; } }
   header .controls { margin-left: auto; display: flex; gap: 12px; align-items: center; }
   header .controls .ctl { display: inline-flex; align-items: center; gap: 5px;
@@ -296,7 +300,17 @@ STATS_HTML = r"""<!doctype html>
   main { flex: 1 1 auto; min-height: 0; padding: 12px 18px;
     display: grid; grid-template-rows: repeat(4, 1fr); gap: 12px; }
   .panel { background: #11151a; border: 1px solid #20262d; border-radius: 6px;
-    padding: 8px 12px 6px; display: flex; flex-direction: column; min-height: 0; }
+    padding: 8px 12px 6px; display: flex; flex-direction: column; min-height: 0;
+    position: relative; }
+  /* Soft inner shadow down the left and right edges, so the graph reads as if it
+     slips under the panel edges. Overlays the SVG; never intercepts clicks. The
+     matching corner radii keep the panel's rounded corners clean. */
+  .panel::before, .panel::after { content: ""; position: absolute; top: 0;
+    bottom: 0; width: 9px; pointer-events: none; z-index: 2; }
+  .panel::before { left: 0; border-radius: 6px 0 0 6px;
+    background: linear-gradient(to right, rgba(0,0,0,.5), rgba(0,0,0,0)); }
+  .panel::after { right: 0; border-radius: 0 6px 6px 0;
+    background: linear-gradient(to left, rgba(0,0,0,.5), rgba(0,0,0,0)); }
   .panel-head { flex: 0 0 auto; display: flex; justify-content: space-between;
     align-items: baseline; margin-bottom: 4px; }
   .panel-title { font-size: 12px; letter-spacing: .06em; text-transform: uppercase;
@@ -347,12 +361,24 @@ STATS_HTML = r"""<!doctype html>
     font-size: 11px; color: #6c7886; border-top: 1px solid #20262d; }
   footer a { color: #9ba6b2; text-decoration: none; }
   footer a:hover { color: #d8dde3; text-decoration: underline; }
+  /* Portrait phones (iPhone ≈ 390px): let the header controls wrap below the
+     title instead of overflowing, and tighten paddings/grids to fit the column. */
+  @media (max-width: 480px) {
+    header { padding: 10px 12px; gap: 8px 12px; flex-wrap: wrap; }
+    header h1 { font-size: 16px; }
+    #statusbar .status { font-size: 11px; letter-spacing: .04em; }
+    header .controls { gap: 8px; }
+    header .controls .ctl { font-size: 10px; gap: 4px; }
+    main { padding: 10px 12px; gap: 10px; }
+    .panel { padding: 7px 10px 5px; }
+    .cores { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 6px; }
+    footer { padding: 6px 12px; }
+  }
 </style>
 </head>
 <body>
 <header>
   <h1>Server Vitals</h1>
-  <div class="meta">status: <span id="status" class="status st-idle">connecting…</span></div>
   <div class="controls">
     <span class="ctl">poll
       <select id="poll-sel">
@@ -374,10 +400,13 @@ STATS_HTML = r"""<!doctype html>
         <option value="60">60m</option>
       </select>
     </span>
+    <button id="pause-btn" class="ctl-btn" type="button"
+      title="Pause polling" aria-label="Pause polling" aria-pressed="false">⏸</button>
   </div>
-  <button id="pause-btn" class="ctl-btn" type="button"
-    title="Pause polling" aria-label="Pause polling" aria-pressed="false">⏸</button>
 </header>
+<div id="statusbar">
+  <span id="status" class="status st-idle">connecting…</span>
+</div>
 <main>
   <section class="panel" id="cores-panel">
     <div class="panel-head">
@@ -456,10 +485,29 @@ STATS_HTML = r"""<!doctype html>
     return Math.max(cpuLvl, memLvl, loadLvl);
   }
 
+  // The state word (e.g. "light") stays white. `detail` is either a plain string
+  // appended after it (the hung diagnostics), or an array of {label, pct} metrics
+  // rendered as "(C 56%, M 43%, D 32%)" with each metric tinted by its own value.
   function setStatus(state, detail) {
     const s = el('status');
     s.className = 'status st-' + state;
-    s.textContent = detail ? state + ' · ' + detail : state;
+    s.textContent = '';
+    s.appendChild(document.createTextNode(state));
+    if (!detail) return;
+    if (typeof detail === 'string') {
+      s.appendChild(document.createTextNode(' ' + detail));
+      return;
+    }
+    s.appendChild(document.createTextNode(' ('));
+    detail.forEach((m, i) => {
+      if (i) s.appendChild(document.createTextNode(', '));
+      const span = document.createElement('span');
+      span.className = 'st-metric';
+      span.style.color = metricColor(m.pct);
+      span.textContent = m.label + ': ' + Math.round(m.pct) + '%';
+      s.appendChild(span);
+    });
+    s.appendChild(document.createTextNode(')'));
   }
 
   // Filled-area gradient endpoints, shared by every chart: `from` paints the
@@ -492,6 +540,18 @@ STATS_HTML = r"""<!doctype html>
     const sat = 45 + 25 * p;   // 45% → 70%
     const lit = 9 + 5 * p;     // 9%  → 14%
     return 'hsl(' + hue.toFixed(0) + ',' + sat.toFixed(0) + '%,' + lit.toFixed(0) + '%)';
+  }
+
+  const clamp01 = x => x < 0 ? 0 : x > 1 ? 1 : x;
+  // Tint a metric word on the status row by its percentage: 0% green → 50% orange
+  // → 100% red. Kept bright (high lightness) so the coloured text stays legible
+  // on the dark-grey strip.
+  function metricColor(pct) {
+    const p = clamp01(pct / 100);
+    const hue = p < 0.5 ? 140 - (140 - 38) * (p / 0.5)   // green → orange
+                        : 38 - 38 * ((p - 0.5) / 0.5);    // orange → red
+    const sat = 70 + 18 * p;   // 70% → 88%
+    return 'hsl(' + hue.toFixed(0) + ',' + sat.toFixed(0) + '%,60%)';
   }
 
   function ensureCores(count) {
@@ -939,6 +999,14 @@ STATS_HTML = r"""<!doctype html>
         ? 'hung'
         : LOAD_STATES[classifyLoad(j.cpu_percent, j.memory_percent, loadPerCore)];
 
+      // Per-metric read-out beside the status word — "(C: 56%, M: 43%, D: 32%)" —
+      // each tinted by its own value (green→orange→red) in setStatus().
+      statusDetail = [
+        { label: 'C', pct: j.cpu_percent },
+        { label: 'M', pct: j.memory_percent },
+        { label: 'D', pct: j.disk_percent },
+      ];
+
       consecutiveFailures = 0;
       lastError = null;
       ok = true;
@@ -958,7 +1026,7 @@ STATS_HTML = r"""<!doctype html>
       setStatus(statusState, statusDetail);
     } else {
       // No response from the box → hung, with the failing-poll count + reason.
-      setStatus('hung', consecutiveFailures + ' polls · ' + lastError);
+      setStatus('hung', '· ' + consecutiveFailures + ' polls · ' + lastError);
     }
     renderAll();
 
