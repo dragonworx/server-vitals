@@ -7,6 +7,7 @@ Exposes:
 """
 import json
 import os
+import sys
 import threading
 import time
 import traceback
@@ -16,6 +17,179 @@ from urllib.parse import parse_qs
 LISTEN = ("127.0.0.1", 9999)
 SAMPLE_INTERVAL = 0.25  # seconds between background CPU samples
 REQUEST_TIMEOUT = 5     # seconds before an idle/slow client connection is dropped
+
+# Server Vitals reads host metrics straight from the kernel. On Linux that's the
+# /proc pseudo-files; macOS has no /proc, so the same numbers come from the Mach
+# kernel and sysctl via ctypes (the `_mac_*` backend below). Everything above the
+# collectors — the CPU sampler, HTTP layer, and dashboard — is platform-neutral,
+# so each metric function just dispatches to the right backend for the host.
+IS_MACOS = sys.platform == "darwin"
+IS_LINUX = sys.platform.startswith("linux")
+
+
+# ---------------------------------------------------------------------------
+# macOS metric backend (Mach / sysctl via ctypes)
+# ---------------------------------------------------------------------------
+# macOS ships none of /proc/{stat,meminfo,uptime}. The equivalent host data lives
+# behind the Mach host port (per-CPU tick counts, VM page statistics) and sysctl
+# (RAM size, page size, swap, boot time). We bind the handful of libSystem symbols
+# we need with ctypes — still standard-library only: no pip, no virtualenv, no
+# native build. None of this runs unless IS_MACOS, so importing on Linux is inert.
+if IS_MACOS:
+    import ctypes
+
+    _libc = ctypes.CDLL("/usr/lib/libSystem.dylib", use_errno=True)
+
+    # Mach host port (a send right). mach_host_self() hands out a fresh reference
+    # on each call, so grab one once and reuse it — re-calling would leak refs.
+    _libc.mach_host_self.restype = ctypes.c_uint
+    _MACH_HOST = _libc.mach_host_self()
+    # The task-self port is exported as a data symbol; used to free kernel buffers.
+    _MACH_TASK = ctypes.c_uint.in_dll(_libc, "mach_task_self_").value
+
+    _libc.sysctlbyname.argtypes = [
+        ctypes.c_char_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t),
+        ctypes.c_void_p, ctypes.c_size_t,
+    ]
+    _libc.sysctlbyname.restype = ctypes.c_int
+
+    _libc.host_processor_info.argtypes = [
+        ctypes.c_uint, ctypes.c_int, ctypes.POINTER(ctypes.c_uint),
+        ctypes.POINTER(ctypes.POINTER(ctypes.c_uint)), ctypes.POINTER(ctypes.c_uint),
+    ]
+    _libc.host_processor_info.restype = ctypes.c_int
+
+    _libc.vm_deallocate.argtypes = [ctypes.c_uint, ctypes.c_void_p, ctypes.c_size_t]
+    _libc.vm_deallocate.restype = ctypes.c_int
+
+    _libc.host_statistics64.argtypes = [
+        ctypes.c_uint, ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint),
+    ]
+    _libc.host_statistics64.restype = ctypes.c_int
+
+    _PROCESSOR_CPU_LOAD_INFO = 2
+    _CPU_STATE_MAX = 4
+    _CPU_STATE_USER, _CPU_STATE_SYSTEM, _CPU_STATE_IDLE, _CPU_STATE_NICE = 0, 1, 2, 3
+    _HOST_VM_INFO64 = 4
+
+    class _vm_statistics64(ctypes.Structure):
+        # Layout of vm_statistics64 (<mach/vm_statistics.h>). The natural_t fields
+        # are page counts; multiply by page size for bytes. We read only a few of
+        # them, but mirror the whole struct so its byte size — and thus the info
+        # count handed to host_statistics64 — is exactly right.
+        _fields_ = [
+            ("free_count", ctypes.c_uint),
+            ("active_count", ctypes.c_uint),
+            ("inactive_count", ctypes.c_uint),
+            ("wire_count", ctypes.c_uint),
+            ("zero_fill_count", ctypes.c_uint64),
+            ("reactivations", ctypes.c_uint64),
+            ("pageins", ctypes.c_uint64),
+            ("pageouts", ctypes.c_uint64),
+            ("faults", ctypes.c_uint64),
+            ("cow_faults", ctypes.c_uint64),
+            ("lookups", ctypes.c_uint64),
+            ("hits", ctypes.c_uint64),
+            ("purges", ctypes.c_uint64),
+            ("purgeable_count", ctypes.c_uint),
+            ("speculative_count", ctypes.c_uint),
+            ("decompressions", ctypes.c_uint64),
+            ("compressions", ctypes.c_uint64),
+            ("swapins", ctypes.c_uint64),
+            ("swapouts", ctypes.c_uint64),
+            ("compressor_page_count", ctypes.c_uint),
+            ("throttled_count", ctypes.c_uint),
+            ("external_page_count", ctypes.c_uint),
+            ("internal_page_count", ctypes.c_uint),
+            ("total_uncompressed_pages_in_compressor", ctypes.c_uint64),
+        ]
+
+    def _sysctl(name):
+        """Raw bytes of a sysctl by name (the two-call size-then-fetch dance)."""
+        size = ctypes.c_size_t(0)
+        cname = name.encode()
+        if _libc.sysctlbyname(cname, None, ctypes.byref(size), None, 0) != 0:
+            raise OSError("sysctlbyname(%s) sizing failed" % name)
+        buf = ctypes.create_string_buffer(size.value)
+        if _libc.sysctlbyname(cname, buf, ctypes.byref(size), None, 0) != 0:
+            raise OSError("sysctlbyname(%s) failed" % name)
+        return buf.raw[:size.value]
+
+    def _sysctl_int(name):
+        """A scalar integer sysctl (4- or 8-byte), native byte order."""
+        return int.from_bytes(_sysctl(name), sys.byteorder)
+
+    def _mac_cpu_ticks():
+        """(aggregate, cores) in the same shape as the /proc/stat reader: aggregate
+        is (idle, total) summed over all CPUs; cores is [(index, idle, total), …].
+        Ticks come from PROCESSOR_CPU_LOAD_INFO (user/system/idle/nice per CPU), so
+        the existing delta math applies unchanged."""
+        count = ctypes.c_uint(0)
+        info = ctypes.POINTER(ctypes.c_uint)()
+        info_len = ctypes.c_uint(0)
+        kr = _libc.host_processor_info(
+            _MACH_HOST, _PROCESSOR_CPU_LOAD_INFO,
+            ctypes.byref(count), ctypes.byref(info), ctypes.byref(info_len))
+        if kr != 0:
+            raise OSError("host_processor_info failed (kr=%d)" % kr)
+        try:
+            agg_idle = agg_total = 0
+            cores = []
+            for c in range(count.value):
+                base = c * _CPU_STATE_MAX
+                idle = info[base + _CPU_STATE_IDLE]
+                total = (info[base + _CPU_STATE_USER] + info[base + _CPU_STATE_SYSTEM]
+                         + idle + info[base + _CPU_STATE_NICE])
+                cores.append((c, idle, total))
+                agg_idle += idle
+                agg_total += total
+            return (agg_idle, agg_total), cores
+        finally:
+            # Free the kernel-allocated array, or ~one page leaks every sample.
+            _libc.vm_deallocate(
+                _MACH_TASK, ctypes.cast(info, ctypes.c_void_p),
+                info_len.value * ctypes.sizeof(ctypes.c_uint))
+
+    def _mac_vm_stats():
+        stats = _vm_statistics64()
+        count = ctypes.c_uint(ctypes.sizeof(stats) // ctypes.sizeof(ctypes.c_int))
+        kr = _libc.host_statistics64(
+            _MACH_HOST, _HOST_VM_INFO64, ctypes.byref(stats), ctypes.byref(count))
+        if kr != 0:
+            raise OSError("host_statistics64 failed (kr=%d)" % kr)
+        return stats
+
+    def _mac_memory_stats():
+        total = _sysctl_int("hw.memsize")
+        page = _sysctl_int("hw.pagesize")
+        vm = _mac_vm_stats()
+        # "Used" mirrors Activity Monitor's Memory Used = App + Wired + Compressed.
+        # Everything else (free, inactive, speculative, purgeable) is reclaimable
+        # under pressure, so it counts as available.
+        used = (vm.active_count + vm.wire_count + vm.compressor_page_count) * page
+        available = total - used
+        swap_total = swap_used = 0
+        try:
+            raw = _sysctl("vm.swapusage")  # struct xsw_usage: total, avail, used (u64)
+            swap_total = int.from_bytes(raw[0:8], sys.byteorder)
+            swap_used = int.from_bytes(raw[16:24], sys.byteorder)
+        except OSError:
+            pass
+        mb = 1024 * 1024
+        return {
+            "total_mb": round(total / mb, 1),
+            "used_mb": round(used / mb, 1),
+            "available_mb": round(available / mb, 1),
+            "percent": round(used * 100 / total, 1) if total else 0.0,
+            "swap_total_mb": round(swap_total / mb, 1),
+            "swap_used_mb": round(swap_used / mb, 1),
+            "swap_percent": round(swap_used * 100 / swap_total, 1) if swap_total else 0.0,
+        }
+
+    def _mac_uptime():
+        raw = _sysctl("kern.boottime")  # struct timeval; tv_sec is the first word
+        boot = int.from_bytes(raw[0:8], sys.byteorder)
+        return max(0.0, time.time() - boot)
 
 
 def read_meminfo():
@@ -30,6 +204,8 @@ def read_meminfo():
 
 
 def memory_stats():
+    if IS_MACOS:
+        return _mac_memory_stats()
     m = read_meminfo()
     total = m["MemTotal"]
     available = m.get("MemAvailable", m["MemFree"])
@@ -49,8 +225,10 @@ def memory_stats():
 
 
 class CpuSampler:
-    """Samples /proc/stat on a background thread at a fixed cadence and publishes
-    the latest aggregate + per-core CPU percentages.
+    """Samples per-CPU tick counts on a background thread at a fixed cadence and
+    publishes the latest aggregate + per-core CPU percentages. The reading comes
+    from /proc/stat on Linux and Mach's PROCESSOR_CPU_LOAD_INFO on macOS; both
+    return the same (idle, total) tick shape, so the delta math below is shared.
 
     CPU% is inherently a *delta* between two readings. Computing that delta
     per-request would mean every endpoint mutates shared "previous sample" state,
@@ -107,7 +285,7 @@ class CpuSampler:
         return round((1 - (idle - prev[0]) / dt) * 100, 1)
 
     def _sample(self):
-        aggregate, cores = self._read_proc_stat()
+        aggregate, cores = _mac_cpu_ticks() if IS_MACOS else self._read_proc_stat()
 
         percent = 0.0
         if aggregate is not None:
@@ -136,7 +314,7 @@ class CpuSampler:
             try:
                 self._sample()
             except Exception:
-                # A transient /proc read error must not kill the sampler thread;
+                # A transient kernel read error must not kill the sampler thread;
                 # log it and keep the last good snapshot until the next tick.
                 traceback.print_exc()
 
@@ -161,9 +339,14 @@ def cpu_count():
 
 
 def loadavg():
-    with open("/proc/loadavg") as f:
-        p = f.readline().split()
-    return {"1min": float(p[0]), "5min": float(p[1]), "15min": float(p[2])}
+    # os.getloadavg() is portable across Linux and macOS (BSD getloadavg(3) under
+    # the hood), so the same call serves both. Returns 0s on the rare platform
+    # that can't report it rather than failing the whole payload.
+    try:
+        one, five, fifteen = os.getloadavg()
+    except (OSError, AttributeError):
+        return {"1min": 0.0, "5min": 0.0, "15min": 0.0}
+    return {"1min": round(one, 2), "5min": round(five, 2), "15min": round(fifteen, 2)}
 
 
 def disk_usage(path="/"):
@@ -181,6 +364,8 @@ def disk_usage(path="/"):
 
 
 def system_uptime():
+    if IS_MACOS:
+        return _mac_uptime()
     with open("/proc/uptime") as f:
         return float(f.readline().split()[0])
 

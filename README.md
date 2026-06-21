@@ -5,8 +5,14 @@ library only — no pip installs, no virtualenv. It exposes a few JSON health
 endpoints and a self-contained live **stats dashboard** (CPU incl. per-core,
 memory, disk) that you can drop behind nginx or hit directly.
 
+**Runs on Linux _and_ macOS** — the same file. On Linux it reads `/proc`; on a
+Mac it reads the Mach kernel and `sysctl` instead (still zero-dependency, still
+stdlib only), so you can also point it at your laptop. See
+[Run on macOS](#run-on-macos).
+
 Built for a single VPS: it listens on `127.0.0.1:9999` and is meant to be
-reverse-proxied at paths like `/health` and `/stats`.
+reverse-proxied at paths like `/health` and `/stats` — or, on your own machine,
+just opened straight in a browser with no proxy at all.
 
 <p align="center">
   <img src="doc/server-vitals-screenshot-desktop.webp" alt="Server Vitals dashboard (desktop)" width="100%">
@@ -34,9 +40,11 @@ selectable from the header and persisted in `localStorage`.
 
 ## Requirements
 
-- Linux with `/proc` (uses `/proc/stat`, `/proc/meminfo`, `/proc/loadavg`)
-- `python3` (standard library only)
-- `systemd` (for the service) — optional `nginx` for reverse proxying
+- `python3` (standard library only — works with the system Python on both OSes)
+- **Linux** with `/proc` (reads `/proc/stat`, `/proc/meminfo`, `/proc/uptime`),
+  or **macOS** (reads the Mach host port + `sysctl` via `ctypes` — no extra install)
+- For the managed service: `systemd` on Linux (or `launchd` on macOS) — and
+  optional `nginx` / Caddy if you want to reverse-proxy it
 
 ## Why a systemd service, not a Docker container
 
@@ -44,8 +52,10 @@ Server Vitals is a **host-monitoring agent**, so it is deployed as a plain proce
 under systemd — *not* in a container. This is deliberate. The whole job of the
 app is to observe the host it runs on:
 
-- It reads the host kernel directly: `/proc/stat`, `/proc/meminfo`,
-  `/proc/loadavg`, and `statvfs("/")` for CPU / memory / load / disk.
+- It reads the host kernel directly: on Linux `/proc/stat`, `/proc/meminfo`,
+  `/proc/uptime`, and `statvfs("/")`; on macOS the Mach host port
+  (`host_processor_info`, `host_statistics64`) and `sysctl` — for CPU / memory /
+  load / disk.
 
 A container's value is **isolation** — its own filesystem, PID namespace, and
 network stack, separate from the host. That is exactly the wrong default here:
@@ -156,6 +166,57 @@ make run          # python3 server-vitals.py — serves on 127.0.0.1:9999
 ```
 
 Open <http://127.0.0.1:9999/stats>.
+
+## Run on macOS
+
+The same `server-vitals.py` monitors a Mac — your laptop included. There's
+**nothing extra to install** (it uses the system `python3` and `ctypes`; no
+Homebrew, no pip) and **no web-server config to set up locally**: the script is
+itself the HTTP server, so you hit its port directly.
+
+```bash
+git clone https://github.com/dragonworx/server-vitals.git
+cd server-vitals
+make run          # python3 server-vitals.py — serves on 127.0.0.1:9999
+```
+
+Then open <http://127.0.0.1:9999/stats> in your browser, or curl the JSON:
+
+```bash
+curl -s http://127.0.0.1:9999/health | python3 -m json.tool
+```
+
+That's the whole story for a laptop you're watching live — nginx/Caddy are only
+needed when you want to *expose* it on a remote box behind a path like `/stats`.
+The systemd-specific `make` targets (`start`/`stop`/`deploy`…) don't apply on
+macOS; use `make run` for a foreground process.
+
+> **Keep it running in the background (optional).** To have launchd start it at
+> login and respawn it if it dies, drop a user agent at
+> `~/Library/LaunchAgents/com.dragonworx.server-vitals.plist` (adjust the path to
+> your checkout), then `launchctl load` it:
+>
+> ```xml
+> <?xml version="1.0" encoding="UTF-8"?>
+> <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+>   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+> <plist version="1.0"><dict>
+>   <key>Label</key>            <string>com.dragonworx.server-vitals</string>
+>   <key>ProgramArguments</key> <array>
+>     <string>/usr/bin/python3</string>
+>     <string>/Users/YOU/server-vitals/server-vitals.py</string>
+>   </array>
+>   <key>RunAtLoad</key>        <true/>
+>   <key>KeepAlive</key>        <true/>
+> </dict></plist>
+> ```
+>
+> ```bash
+> launchctl load ~/Library/LaunchAgents/com.dragonworx.server-vitals.plist
+> # stop later with: launchctl unload ~/Library/LaunchAgents/com.dragonworx.server-vitals.plist
+> ```
+>
+> It still binds `127.0.0.1:9999` only, so nothing is reachable off your Mac.
 
 ## Manage
 
