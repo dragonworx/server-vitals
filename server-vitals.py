@@ -378,6 +378,28 @@ def fmt_uptime(seconds):
     return f"{d}d {h}h {m}m {s}s"
 
 
+def fmt_size(value, unit="MB"):
+    """Human-readable size string: from `value` expressed in `unit`, climb to the
+    nicest binary unit (KB→PB, 1024-steps to match how the collectors compute MB/GB)
+    and group thousands with commas. e.g. fmt_size(7945.4, "MB") -> "7.76 GB",
+    fmt_size(131072, "MB") -> "128 GB". Decimals taper as the number grows so the
+    read-out stays compact (2 dp under 10, 1 dp under 100, none above)."""
+    units = ["KB", "MB", "GB", "TB", "PB"]
+    try:
+        i = units.index(unit)
+    except ValueError:
+        i = 0
+    v = float(value)
+    while v >= 1024 and i < len(units) - 1:
+        v /= 1024
+        i += 1
+    while v < 1 and i > 0:
+        v *= 1024
+        i -= 1
+    dp = 0 if v >= 100 or v == 0 else 1 if v >= 10 else 2
+    return "{:,.{}f} {}".format(v, dp, units[i])
+
+
 def stats_payload():
     cpu, cores = _sampler.snapshot()
     mem = memory_stats()
@@ -405,6 +427,17 @@ def health_payload():
     status = "ok"
     if cpu >= 95 or mem["percent"] >= 95 or disk["percent"] >= 95:
         status = "degraded"
+    # Human-readable size strings alongside the raw numbers (mirrors uptime_human),
+    # so a person curling /health sees "7.76 GB" rather than "7945.4" MB. The raw
+    # *_mb / *_gb fields stay for machine consumers and the dashboard.
+    mem["total_human"] = fmt_size(mem["total_mb"], "MB")
+    mem["used_human"] = fmt_size(mem["used_mb"], "MB")
+    mem["available_human"] = fmt_size(mem["available_mb"], "MB")
+    mem["swap_total_human"] = fmt_size(mem["swap_total_mb"], "MB")
+    mem["swap_used_human"] = fmt_size(mem["swap_used_mb"], "MB")
+    disk["total_human"] = fmt_size(disk["total_gb"], "GB")
+    disk["used_human"] = fmt_size(disk["used_gb"], "GB")
+    disk["free_human"] = fmt_size(disk["free_gb"], "GB")
     return {
         "status": status,
         "timestamp": int(time.time()),
@@ -822,6 +855,21 @@ STATS_HTML = r"""<!doctype html>
     return h12 + ':' + String(d.getMinutes()).padStart(2, '0') + ampm;
   }
 
+  // Human-readable byte size: from `value` expressed in `unit`, climb to the
+  // nicest binary unit (KB→PB, 1024-steps — matching the server's MB/GB) and
+  // group thousands with commas via toLocaleString. Mirrors fmt_size() in Python;
+  // used for the memory / disk "used / total" read-outs. Decimals taper with size.
+  const SIZE_UNITS = ['KB', 'MB', 'GB', 'TB', 'PB'];
+  function fmtSize(value, unit) {
+    let i = Math.max(0, SIZE_UNITS.indexOf(unit));
+    let v = value;
+    while (v >= 1024 && i < SIZE_UNITS.length - 1) { v /= 1024; i++; }
+    while (v < 1 && i > 0) { v *= 1024; i--; }
+    const dp = v >= 100 || v === 0 ? 0 : v >= 10 ? 1 : 2;
+    return v.toLocaleString(undefined,
+      { minimumFractionDigits: dp, maximumFractionDigits: dp }) + ' ' + SIZE_UNITS[i];
+  }
+
   // Label a sample only when it dominates a ±WIN window AND its prominence
   // (apex - lowest neighbor in window) clears max(MIN_ABS, PROM × y-span).
   // The window cap forces ≥WIN-sample spacing between labels; the prominence
@@ -1169,11 +1217,11 @@ STATS_HTML = r"""<!doctype html>
       el('cpu-now').textContent  = j.cpu_percent.toFixed(1) + '%';
       el('cpu-sub').textContent  = '';
       el('mem-now').textContent  = j.memory_percent.toFixed(1) + '%';
-      el('mem-sub').textContent  = j.memory_used_mb.toFixed(0) + ' / ' +
-                                   j.memory_total_mb.toFixed(0) + ' MB';
+      el('mem-sub').textContent  = fmtSize(j.memory_used_mb, 'MB') + ' / ' +
+                                   fmtSize(j.memory_total_mb, 'MB');
       el('disk-now').textContent = j.disk_percent.toFixed(1) + '%';
-      el('disk-sub').textContent = j.disk_used_gb.toFixed(2) + ' / ' +
-                                   j.disk_total_gb.toFixed(2) + ' GB';
+      el('disk-sub').textContent = fmtSize(j.disk_used_gb, 'GB') + ' / ' +
+                                   fmtSize(j.disk_total_gb, 'GB');
 
       const load1 = (j.load_average && typeof j.load_average['1min'] === 'number')
         ? j.load_average['1min'] : null;
