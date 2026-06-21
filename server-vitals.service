@@ -1,5 +1,5 @@
 [Unit]
-Description=Server Vitals — local health + stats HTTP endpoint (/health, /code-server, /stats)
+Description=Server Vitals — local health + stats HTTP endpoint (/health, /stats)
 After=network.target
 
 [Service]

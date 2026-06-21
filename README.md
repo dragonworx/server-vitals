@@ -13,7 +13,6 @@ reverse-proxied at paths like `/health` and `/stats`.
 | Path           | Returns                                                                 |
 | -------------- | ----------------------------------------------------------------------- |
 | `/health`      | JSON: cpu, memory, disk, load average, uptime, overall `ok/degraded`    |
-| `/code-server` | JSON: deep status of the `code-server@ubuntu` systemd unit              |
 | `/stats`       | HTML live dashboard (polls `/stats?format=json`)                        |
 | `/stats?format=json` | JSON sample: cpu %, **per-core cpu %**, memory, disk             |
 
@@ -36,8 +35,6 @@ app is to observe the host it runs on:
 
 - It reads the host kernel directly: `/proc/stat`, `/proc/meminfo`,
   `/proc/loadavg`, and `statvfs("/")` for CPU / memory / load / disk.
-- It shells out to the host's `systemctl`, `journalctl`, and `pgrep` to report
-  deep status of the `code-server@ubuntu` unit (`/code-server`).
 
 A container's value is **isolation** — its own filesystem, PID namespace, and
 network stack, separate from the host. That is exactly the wrong default here:
@@ -45,20 +42,18 @@ network stack, separate from the host. That is exactly the wrong default here:
 | Concern | systemd service (this project) | Docker container |
 | --- | --- | --- |
 | Sees real host CPU / mem / disk | ✅ directly | ❌ sees the container namespace unless you bind-mount `/proc`, `/`, … |
-| Inspect host systemd units (`systemctl` / `journalctl`) | ✅ works | ❌ no systemd/journal inside — `/code-server` breaks without mounting host sockets |
 | Lifecycle / autostart / restart | systemd (`enable --now`, `Restart=`) | Docker daemon (`restart: unless-stopped`) |
 | Footprint | ~none — one stdlib Python process | image build + daemon overhead |
 
 To run Server Vitals usefully in a container you would have to dismantle that
-isolation (`--pid=host`, `-v /proc:/host/proc:ro`, `-v /:/rootfs:ro`, expose the
-systemd/journal sockets) **and** rewrite the metric paths to read `/host/proc/*`
-— more moving parts for a strictly less capable result. So it ships as a
-service. Containers remain the right tool for workloads you want *isolated from*
-the host (web apps, databases); a host agent is the opposite case.
+isolation (`--pid=host`, `-v /proc:/host/proc:ro`, `-v /:/rootfs:ro`) **and**
+rewrite the metric paths to read `/host/proc/*` — more moving parts for a
+strictly less capable result. So it ships as a service. Containers remain the
+right tool for workloads you want *isolated from* the host (web apps,
+databases); a host agent is the opposite case.
 
 > If you genuinely need it containerized anyway (e.g. a constrained PaaS), run
-> with `--pid=host --network=host`, bind-mount `/proc` and `/` read-only, and
-> expect `/code-server`'s systemd introspection to be unavailable.
+> with `--pid=host --network=host` and bind-mount `/proc` and `/` read-only.
 
 ## Install
 
@@ -98,7 +93,7 @@ responds.
 ## nginx integration
 
 The snippet at [`nginx/server-vitals.conf`](nginx/server-vitals.conf)
-proxies `/health`, `/code-server`, and `/stats` to `127.0.0.1:9999`. After
+proxies `/health` and `/stats` to `127.0.0.1:9999`. After
 installing it (`--with-nginx`), `include` it in any server block:
 
 ```nginx
@@ -163,8 +158,6 @@ sudo ./uninstall.sh --purge-nginx   # also remove the nginx snippet
 Knobs live at the top of `server-vitals.py`:
 
 - `LISTEN` — bind address/port (default `127.0.0.1:9999`)
-- `CODE_SERVER_UNIT` / `CODE_SERVER_PORT` / `CODE_SERVER_HEALTHZ` — the unit the
-  `/code-server` probe inspects
 
 After editing, run `make deploy` to push the new code and restart (or
 `make restart` if you only need to bounce the running service).

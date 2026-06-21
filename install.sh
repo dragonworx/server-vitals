@@ -131,6 +131,6 @@ else
 fi
 
 echo
-ok "done. endpoints (on 127.0.0.1:9999): /health  /code-server  /stats"
+ok "done. endpoints (on 127.0.0.1:9999): /health  /stats"
 echo "    logs:    journalctl -u $SERVICE_NAME -f"
 echo "    stats UI: http://127.0.0.1:9999/stats"

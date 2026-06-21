@@ -3,22 +3,15 @@
 
 Exposes:
   GET /health       - server-wide vitals (cpu, memory, disk, load, uptime)
-  GET /code-server  - deep status for the code-server@ubuntu service
   GET /stats        - HTML thin client that polls /stats?format=json
 """
 import json
 import os
-import socket
-import subprocess
 import threading
 import time
-import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LISTEN = ("127.0.0.1", 9999)
-CODE_SERVER_UNIT = "code-server@ubuntu"
-CODE_SERVER_PORT = 8080
-CODE_SERVER_HEALTHZ = "http://127.0.0.1:8080/healthz"
 
 
 def read_meminfo():
@@ -206,153 +199,6 @@ def health_payload():
         "memory": mem,
         "disk": disk,
         "load_average": loadavg(),
-    }
-
-
-def run_cmd(args, timeout=3):
-    try:
-        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
-        return r.stdout.strip(), r.returncode
-    except subprocess.TimeoutExpired:
-        return "", -1
-    except Exception as e:
-        return f"error: {e}", -1
-
-
-def systemd_props(unit, properties):
-    args = ["systemctl", "show", unit] + sum((["-p", p] for p in properties), [])
-    out, _ = run_cmd(args)
-    props = {}
-    for line in out.splitlines():
-        if "=" in line:
-            k, v = line.split("=", 1)
-            props[k] = v
-    return props
-
-
-def port_open(host, port, timeout=1.0):
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(timeout)
-    try:
-        return sock.connect_ex((host, port)) == 0
-    finally:
-        sock.close()
-
-
-def http_probe(url, timeout=3):
-    t0 = time.monotonic()
-    try:
-        req = urllib.request.Request(url, method="GET")
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            status = resp.status
-    except urllib.error.HTTPError as e:
-        # HTTPError is still a "responded" signal — record the code.
-        status = e.code
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-    return {"ok": True, "status": status, "latency_ms": round((time.monotonic() - t0) * 1000, 1)}
-
-
-def proc_info(pid):
-    if not pid or pid == "0":
-        return {}
-    info = {}
-    try:
-        with open(f"/proc/{pid}/status") as f:
-            for line in f:
-                if line.startswith(("State:", "VmRSS:", "VmSize:", "VmPeak:", "Threads:", "voluntary_ctxt_switches:", "nonvoluntary_ctxt_switches:")):
-                    k, _, v = line.partition(":")
-                    info[k.strip()] = v.strip()
-    except FileNotFoundError:
-        return {"error": "pid not found"}
-    except Exception as e:
-        return {"error": str(e)}
-    try:
-        out, _ = run_cmd(["pgrep", "-c", "-P", pid])
-        info["direct_children"] = int(out) if out.isdigit() else 0
-    except Exception:
-        pass
-    return info
-
-
-def code_server_payload():
-    is_active, _ = run_cmd(["systemctl", "is-active", CODE_SERVER_UNIT])
-    is_enabled, _ = run_cmd(["systemctl", "is-enabled", CODE_SERVER_UNIT])
-    props = systemd_props(
-        CODE_SERVER_UNIT,
-        [
-            "ActiveState", "SubState", "LoadState", "Result",
-            "MainPID", "TasksCurrent", "TasksMax",
-            "MemoryCurrent", "MemoryPeak", "CPUUsageNSec",
-            "ActiveEnterTimestamp", "ActiveExitTimestamp",
-            "NRestarts", "ExecMainStartTimestamp",
-        ],
-    )
-
-    pid = props.get("MainPID", "0")
-    process = proc_info(pid)
-
-    listening = port_open("127.0.0.1", CODE_SERVER_PORT)
-    http = http_probe(CODE_SERVER_HEALTHZ)
-
-    journal_out, _ = run_cmd(
-        ["journalctl", "-u", CODE_SERVER_UNIT, "-n", "10", "--no-pager", "-o", "short-iso"],
-        timeout=4,
-    )
-    recent_log_lines = journal_out.splitlines() if journal_out else []
-
-    def parse_int(s):
-        try:
-            return int(s)
-        except (TypeError, ValueError):
-            return None
-
-    mem_bytes = parse_int(props.get("MemoryCurrent"))
-    mem_peak = parse_int(props.get("MemoryPeak"))
-    cpu_nsec = parse_int(props.get("CPUUsageNSec"))
-
-    overall = "ok"
-    reasons = []
-    if is_active != "active":
-        overall = "down"
-        reasons.append(f"systemd state: {is_active}")
-    if not listening:
-        overall = "down" if overall == "down" else "degraded"
-        reasons.append(f"port {CODE_SERVER_PORT} not listening")
-    if not http.get("ok"):
-        overall = "degraded" if overall == "ok" else overall
-        reasons.append(f"http probe failed: {http.get('error') or http.get('status')}")
-
-    return {
-        "service": CODE_SERVER_UNIT,
-        "overall": overall,
-        "reasons": reasons,
-        "systemd": {
-            "is_active": is_active,
-            "is_enabled": is_enabled,
-            "active_state": props.get("ActiveState"),
-            "sub_state": props.get("SubState"),
-            "load_state": props.get("LoadState"),
-            "result": props.get("Result"),
-            "main_pid": pid,
-            "tasks_current": props.get("TasksCurrent"),
-            "tasks_max": props.get("TasksMax"),
-            "memory_bytes": mem_bytes,
-            "memory_mb": round(mem_bytes / 1024**2, 1) if mem_bytes else None,
-            "memory_peak_mb": round(mem_peak / 1024**2, 1) if mem_peak else None,
-            "cpu_seconds": round(cpu_nsec / 1e9, 2) if cpu_nsec else None,
-            "started_at": props.get("ActiveEnterTimestamp") or props.get("ExecMainStartTimestamp"),
-            "exited_at": props.get("ActiveExitTimestamp") or None,
-            "n_restarts": props.get("NRestarts"),
-        },
-        "process": process,
-        "network": {
-            "port": CODE_SERVER_PORT,
-            "listening": listening,
-            "http_probe_url": CODE_SERVER_HEALTHZ,
-            "http_probe": http,
-        },
-        "recent_log": recent_log_lines,
     }
 
 
@@ -1123,8 +969,6 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path in ("/health", ""):
                 self._send_json(health_payload())
-            elif path == "/code-server":
-                self._send_json(code_server_payload())
             elif path == "/stats":
                 if "format=json" in query:
                     self._send_json(stats_payload())
