@@ -783,10 +783,14 @@ STATS_HTML = r"""<!doctype html>
   }
 
   // Continuous 0..1 "heat" for the whole box: each signal normalised against its
-  // critical threshold (cpu 90%, mem 92%, load 2×/core — the classifyLoad cut-offs)
-  // with the worst signal winning. Drives the status-bar backdrop wash.
+  // critical threshold (cpu 90%, load 2×/core) with the worst signal winning.
+  // Drives the status-bar backdrop wash. Memory is deliberately given far less
+  // influence — a healthy box routinely sits at 50-70% RAM (caches, etc.) without
+  // being stressed, so memory is measured from a 50% floor up to 95%: 50% reads
+  // as cool (green), and only genuine pressure (85%+) pushes the wash hot.
   function loadHeat(cpu, mem, loadPerCore) {
-    return clamp01(Math.max(cpu / 90, mem / 92, loadPerCore / 2));
+    const memHeat = clamp01((mem - 50) / 45);  // 50% → 0 (green), 95% → 1 (red)
+    return clamp01(Math.max(cpu / 90, memHeat, loadPerCore / 2));
   }
 
   // Backdrop colour for the status strip from a 0..1 heat: interpolate the shared
