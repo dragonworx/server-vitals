@@ -486,18 +486,27 @@ STATS_HTML = r"""<!doctype html>
   @media (prefers-reduced-motion: reduce) {
     header h1 { animation: none; -webkit-text-fill-color: #cfd6de; color: #cfd6de; }
   }
-  /* Status row under the banner: a flat dark-grey strip with the status word
-     (white) centred, followed by each metric (C/M/D) tinted by its own value on
-     a green→orange→red ramp (0% = green). */
+  /* Status row under the banner: the status word centred, followed by each
+     metric (C/M/D) tinted by its own value on a green→orange→red ramp. The
+     strip's own backdrop is washed with the current heuristic colour (green →
+     orange → red, blended toward black) and eased on change via a transition.
+     The status word is coloured by state: idle = white, light = green,
+     heavy/other mid = orange, critical/hung = red. */
   #statusbar { flex: 0 0 auto; height: 30px; display: flex;
     align-items: center; justify-content: center;
-    background: #21262d; border-bottom: 1px solid #2b323a; }
+    background: #21262d; border-bottom: 1px solid #2b323a;
+    transition: background-color .6s ease; }
   #statusbar .status { margin: 0; pointer-events: none; white-space: nowrap;
     font-size: 12px; font-weight: 700; letter-spacing: .14em;
     text-transform: uppercase; color: #f4f6f8;
     /* thin black drop shadow, +1/+1 offset, 15% black */
     text-shadow: 1px 1px 0 rgba(0,0,0,.15); }
   #statusbar .status .st-metric { color: inherit; }
+  #statusbar .status.st-idle     { color: #ffffff; }
+  #statusbar .status.st-light    { color: #27c93f; }
+  #statusbar .status.st-heavy    { color: #ff9f40; }
+  #statusbar .status.st-critical { color: #ff4d4d; }
+  #statusbar .status.st-hung     { color: #ff4d4d; }
   #statusbar .status.st-hung { animation: hung-blink 1s steps(2) infinite; }
   @keyframes hung-blink { 50% { opacity: .35; } }
   header .controls { margin-left: auto; display: flex; gap: 12px; align-items: center; }
@@ -706,9 +715,10 @@ STATS_HTML = r"""<!doctype html>
   // The state word (e.g. "light") stays white. `detail` is either a plain string
   // appended after it (the hung diagnostics), or an array of {label, pct} metrics
   // rendered as "(C 56%, M 43%, D 32%)" with each metric tinted by its own value.
-  function setStatus(state, detail) {
+  function setStatus(state, detail, heat) {
     const s = el('status');
     s.className = 'status st-' + state;
+    el('statusbar').style.backgroundColor = statusBg(heat == null ? 1 : heat);
     s.textContent = '';
     s.appendChild(document.createTextNode(state));
     if (!detail) return;
@@ -770,6 +780,27 @@ STATS_HTML = r"""<!doctype html>
                         : 38 - 38 * ((p - 0.5) / 0.5);    // orange → red
     const sat = 70 + 18 * p;   // 70% → 88%
     return 'hsl(' + hue.toFixed(0) + ',' + sat.toFixed(0) + '%,60%)';
+  }
+
+  // Continuous 0..1 "heat" for the whole box: each signal normalised against its
+  // critical threshold (cpu 90%, mem 92%, load 2×/core — the classifyLoad cut-offs)
+  // with the worst signal winning. Drives the status-bar backdrop wash.
+  function loadHeat(cpu, mem, loadPerCore) {
+    return clamp01(Math.max(cpu / 90, mem / 92, loadPerCore / 2));
+  }
+
+  // Backdrop colour for the status strip from a 0..1 heat: interpolate the shared
+  // green→orange→red ramp, then blend toward black (× DARKEN) so the bar stays
+  // dark — e.g. heat 0 → green #27c93f darkens to ≈ #06220c.
+  const STATUS_BG_DARKEN = 0.17;
+  function statusBg(heat) {
+    const stops = [[39, 201, 63], [255, 159, 64], [255, 77, 77]];  // FROM/MID/TO
+    const p = clamp01(heat);
+    const seg = p < 0.5 ? 0 : 1;
+    const t = p < 0.5 ? p / 0.5 : (p - 0.5) / 0.5;
+    const a = stops[seg], b = stops[seg + 1];
+    const ch = i => Math.round((a[i] + (b[i] - a[i]) * t) * STATUS_BG_DARKEN);
+    return 'rgb(' + ch(0) + ',' + ch(1) + ',' + ch(2) + ')';
   }
 
   function ensureCores(count) {
@@ -1195,7 +1226,7 @@ STATS_HTML = r"""<!doctype html>
 
   async function tick() {
     let ok = false;
-    let statusState = 'hung', statusDetail = null;
+    let statusState = 'hung', statusDetail = null, statusHeat = 1;
     try {
       const r = await fetchWithTimeout('/stats?format=json', FETCH_TIMEOUT_MS);
       if (!r.ok) throw new Error('http ' + r.status);
@@ -1231,6 +1262,7 @@ STATS_HTML = r"""<!doctype html>
       statusState = loadPerCore >= 4
         ? 'hung'
         : LOAD_STATES[classifyLoad(j.cpu_percent, j.memory_percent, loadPerCore)];
+      statusHeat = loadHeat(j.cpu_percent, j.memory_percent, loadPerCore);
 
       // Per-metric read-out beside the status word — "(C: 56%, M: 43%, D: 32%)" —
       // each tinted by its own value (green→orange→red) in setStatus().
@@ -1256,10 +1288,11 @@ STATS_HTML = r"""<!doctype html>
     }
 
     if (ok) {
-      setStatus(statusState, statusDetail);
+      setStatus(statusState, statusDetail, statusHeat);
     } else {
-      // No response from the box → hung, with the failing-poll count + reason.
-      setStatus('hung', '· ' + consecutiveFailures + ' polls · ' + lastError);
+      // No response from the box → hung (red backdrop), with the failing-poll
+      // count + reason.
+      setStatus('hung', '· ' + consecutiveFailures + ' polls · ' + lastError, 1);
     }
     renderAll();
 
