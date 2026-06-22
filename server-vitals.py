@@ -490,8 +490,10 @@ STATS_HTML = r"""<!doctype html>
      metric (C/M/D) tinted by its own value on a green→orange→red ramp. The
      strip's own backdrop is washed with the current heuristic colour (green →
      orange → red, blended toward black) and eased on change via a transition.
-     The status word is coloured by state: idle = white, light = green,
-     heavy/other mid = orange, critical/hung = red. */
+     The status word is coloured inline (JS) by the same 0..1 pressure score that
+     picks the word, on the shared green→orange→red ramp — green when idle, red at
+     full load — so the label's hue and the backdrop always agree. `hung` overrides
+     to a blinking red. */
   #statusbar { flex: 0 0 auto; height: 30px; display: flex;
     align-items: center; justify-content: center;
     background: #21262d; border-bottom: 1px solid #2b323a;
@@ -500,13 +502,9 @@ STATS_HTML = r"""<!doctype html>
     font-size: 12px; font-weight: 700; letter-spacing: .14em;
     text-transform: uppercase; color: #f4f6f8;
     /* thin black drop shadow, +1/+1 offset, 15% black */
-    text-shadow: 1px 1px 0 rgba(0,0,0,.15); }
+    text-shadow: 1px 1px 0 rgba(0,0,0,.15);
+    transition: color .6s ease; }
   #statusbar .status .st-metric { color: inherit; }
-  #statusbar .status.st-idle     { color: #ffffff; }
-  #statusbar .status.st-light    { color: #27c93f; }
-  #statusbar .status.st-heavy    { color: #ff9f40; }
-  #statusbar .status.st-critical { color: #ff4d4d; }
-  #statusbar .status.st-hung     { color: #ff4d4d; }
   #statusbar .status.st-hung { animation: hung-blink 1s steps(2) infinite; }
   @keyframes hung-blink { 50% { opacity: .35; } }
   header .controls { margin-left: auto; display: flex; gap: 12px; align-items: center; }
@@ -699,17 +697,36 @@ STATS_HTML = r"""<!doctype html>
   }
   applyPulseTiming();
 
-  // Fine-grained load classifier. Each signal (CPU%, memory%, load-per-core) is
-  // bucketed into a severity 0..3; the worst signal wins. load-per-core is the
-  // 1-min load average divided by core count, the classic over-subscription gauge.
-  // A wildly over-subscribed box (load ≥ 4×cores) — or one that stops answering —
-  // is reported as "hung". States: idle · light · heavy · critical · hung.
-  const LOAD_STATES = ['idle', 'light', 'heavy', 'critical'];
-  function classifyLoad(cpu, mem, loadPerCore) {
-    const cpuLvl  = cpu >= 90 ? 3 : cpu >= 65 ? 2 : cpu >= 25 ? 1 : 0;
-    const memLvl  = mem >= 92 ? 3 : mem >= 78 ? 2 : mem >= 55 ? 1 : 0;
-    const loadLvl = loadPerCore >= 2 ? 3 : loadPerCore >= 1 ? 2 : loadPerCore >= 0.5 ? 1 : 0;
-    return Math.max(cpuLvl, memLvl, loadLvl);
+  // Overall machine pressure as a single continuous 0..1 score — the spine of the
+  // whole status row. Each signal is normalised so 1.0 means "maxed/critical" and
+  // the worst signal wins:
+  //   • CPU%        — straight cpu/100; a pegged CPU is genuinely maxed.
+  //   • memory%     — measured from a 50% comfort floor up to 95% (a healthy box
+  //                   routinely sits at 50-70% RAM on caches without being stressed,
+  //                   so that range stays cool; only real pressure climbs).
+  //   • load/core   — 1-min load ÷ cores, the classic over-subscription gauge,
+  //                   normalised so 2× core count reads as fully maxed.
+  // This ONE number drives both the status word (scoreWord) and every colour, so
+  // the label and the backdrop can never disagree.
+  function loadScore(cpu, mem, loadPerCore) {
+    const cpuS  = clamp01(cpu / 100);
+    const memS  = clamp01((mem - 50) / 45);
+    const loadS = clamp01(loadPerCore / 2);
+    return clamp01(Math.max(cpuS, memS, loadS));
+  }
+
+  // Names for bands of the 0..1 score, finer-grained than the old 4-way bucketing
+  // so the word tracks real change instead of jumping. The word flips exactly as
+  // the backdrop crosses each threshold. A wildly over-subscribed box (load ≥
+  // 4×cores) — or one that stops answering — is reported as "hung" (handled in
+  // tick()). States: idle · light · moderate · busy · heavy · critical · overloaded.
+  const LOAD_BANDS = [
+    [0.08, 'idle'], [0.25, 'light'], [0.45, 'moderate'], [0.65, 'busy'],
+    [0.82, 'heavy'], [0.95, 'critical'],
+  ];
+  function scoreWord(score) {
+    for (const [max, word] of LOAD_BANDS) if (score <= max) return word;
+    return 'overloaded';
   }
 
   // The state word (e.g. "light") stays white. `detail` is either a plain string
@@ -717,8 +734,13 @@ STATS_HTML = r"""<!doctype html>
   // rendered as "(C 56%, M 43%, D 32%)" with each metric tinted by its own value.
   function setStatus(state, detail, heat) {
     const s = el('status');
-    s.className = 'status st-' + state;
-    el('statusbar').style.backgroundColor = statusBg(heat == null ? 1 : heat);
+    const h = heat == null ? 1 : heat;
+    // `hung` blinks red (its own class); every other word is tinted on the shared
+    // green→orange→red ramp by the same score that named it — green at idle, red
+    // at full load — so the label hue matches the backdrop wash.
+    s.className = 'status' + (state === 'hung' ? ' st-hung' : '');
+    s.style.color = state === 'hung' ? '#ff4d4d' : metricColor(h * 100);
+    el('statusbar').style.backgroundColor = statusBg(h);
     s.textContent = '';
     s.appendChild(document.createTextNode(state));
     if (!detail) return;
@@ -780,17 +802,6 @@ STATS_HTML = r"""<!doctype html>
                         : 38 - 38 * ((p - 0.5) / 0.5);    // orange → red
     const sat = 70 + 18 * p;   // 70% → 88%
     return 'hsl(' + hue.toFixed(0) + ',' + sat.toFixed(0) + '%,60%)';
-  }
-
-  // Continuous 0..1 "heat" for the whole box: each signal normalised against its
-  // critical threshold (cpu 90%, load 2×/core) with the worst signal winning.
-  // Drives the status-bar backdrop wash. Memory is deliberately given far less
-  // influence — a healthy box routinely sits at 50-70% RAM (caches, etc.) without
-  // being stressed, so memory is measured from a 50% floor up to 95%: 50% reads
-  // as cool (green), and only genuine pressure (85%+) pushes the wash hot.
-  function loadHeat(cpu, mem, loadPerCore) {
-    const memHeat = clamp01((mem - 50) / 45);  // 50% → 0 (green), 95% → 1 (red)
-    return clamp01(Math.max(cpu / 90, memHeat, loadPerCore / 2));
   }
 
   // Backdrop colour for the status strip from a 0..1 heat: interpolate the shared
@@ -1262,11 +1273,10 @@ STATS_HTML = r"""<!doctype html>
         ? j.load_average['1min'] : null;
       const coreCount = (typeof j.cpu_count === 'number' && j.cpu_count > 0) ? j.cpu_count : 1;
       const loadPerCore = load1 == null ? 0 : load1 / coreCount;
-      // A responsive but wildly over-subscribed box reads as "hung" too.
-      statusState = loadPerCore >= 4
-        ? 'hung'
-        : LOAD_STATES[classifyLoad(j.cpu_percent, j.memory_percent, loadPerCore)];
-      statusHeat = loadHeat(j.cpu_percent, j.memory_percent, loadPerCore);
+      // One score names the state and washes the backdrop. A responsive but wildly
+      // over-subscribed box (load ≥ 4×cores) still reads as "hung".
+      statusHeat = loadScore(j.cpu_percent, j.memory_percent, loadPerCore);
+      statusState = loadPerCore >= 4 ? 'hung' : scoreWord(statusHeat);
 
       // Per-metric read-out beside the status word — "(C: 56%, M: 43%, D: 32%)" —
       // each tinted by its own value (green→orange→red) in setStatus().
