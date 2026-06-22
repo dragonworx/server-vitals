@@ -188,57 +188,69 @@ curl -s http://127.0.0.1:9999/health | python3 -m json.tool
 
 That's the whole story for a laptop you're watching live — nginx/Caddy are only
 needed when you want to *expose* it on a remote box behind a path like `/stats`.
-The systemd-specific `make` targets (`start`/`stop`/`deploy`…) don't apply on
-macOS; use `make run` for a foreground process.
 
-> **Keep it running in the background (optional).** To have launchd start it at
-> login and respawn it if it dies, drop a user agent at
-> `~/Library/LaunchAgents/com.dragonworx.server-vitals.plist` (adjust the path to
-> your checkout), then `launchctl load` it:
->
-> ```xml
-> <?xml version="1.0" encoding="UTF-8"?>
-> <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
->   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-> <plist version="1.0"><dict>
->   <key>Label</key>            <string>com.dragonworx.server-vitals</string>
->   <key>ProgramArguments</key> <array>
->     <string>/usr/bin/python3</string>
->     <string>/Users/YOU/server-vitals/server-vitals.py</string>
->   </array>
->   <key>RunAtLoad</key>        <true/>
->   <key>KeepAlive</key>        <true/>
-> </dict></plist>
-> ```
->
-> ```bash
-> launchctl load ~/Library/LaunchAgents/com.dragonworx.server-vitals.plist
-> # stop later with: launchctl unload ~/Library/LaunchAgents/com.dragonworx.server-vitals.plist
-> ```
->
-> It still binds `127.0.0.1:9999` only, so nothing is reachable off your Mac.
+**Keep it running in the background.** `make install` works on macOS too: it sets
+up a launchd service (label `com.dragonworx.server-vitals`) that starts at login
+and respawns if it dies — the same `make` workflow as Linux, no manual plist:
+
+```bash
+make install                 # per-user LaunchAgent (~/Library/LaunchAgents), no sudo
+make install ARGS=--system   # system-wide LaunchDaemon (/Library/LaunchDaemons), sudo
+```
+
+What it installs:
+
+- `server-vitals.py` → `/usr/local/bin/` (mode 0755; sudo only if that dir isn't
+  writable — on Apple Silicon it falls back to `/opt/homebrew/bin` if needed)
+- a launchd plist → `~/Library/LaunchAgents/com.dragonworx.server-vitals.plist`
+  (or `/Library/LaunchDaemons/…` with `--system`)
+- logs → `~/Library/Logs/server-vitals.log` (or `/var/log/server-vitals.log`)
+
+The installer loads the plist (`launchctl bootstrap`, falling back to `load -w`
+on older macOS), then polls `/health` to confirm it came up — re-running is
+idempotent. The **LaunchAgent is the right default**: the endpoint binds
+`127.0.0.1:9999` only, so nothing is reachable off your Mac and there's no reason
+to run as root. Use `--system` only if you need it up at boot before you log in.
+
+Manage it with the same targets below (`make start`/`stop`/`restart`/`status`/
+`logs`) and remove it with `make uninstall` (add `ARGS=--system` for a daemon
+install). `make run` still gives you a plain foreground process if you'd rather
+not install anything.
 
 ## Manage
+
+These work on **both** Linux (systemd) and macOS (launchd) — the Makefile detects
+the OS and runs the right service-manager command:
 
 ```bash
 make start        # start the service
 make stop         # stop the service
 make restart      # restart (no code redeploy)
 make deploy       # rebuild: reinstall current server-vitals.py + restart
-make status       # systemctl status
-make logs         # journalctl -u server-vitals -f
+make status       # service status   (systemctl status / launchctl print)
+make logs         # follow logs      (journalctl -u … / tail the launchd log)
 make check        # py_compile the source
 ```
 
 Use `make restart` to bounce the running service; use `make deploy` after
-editing `server-vitals.py` to push the new code and restart in one step.
+editing `server-vitals.py` to push the new code and restart in one step. On a
+macOS `--system` install, add `ARGS=--system` so the manage targets address the
+root LaunchDaemon (e.g. `make restart ARGS=--system`).
 
 ## Uninstall
 
 ```bash
-sudo ./uninstall.sh                 # remove service + binary
+make uninstall                      # remove service + binary (both OSes)
+
+# Linux only:
 sudo ./uninstall.sh --purge-nginx   # also remove the nginx snippet
+
+# macOS --system install:
+make uninstall ARGS=--system        # remove the root LaunchDaemon instead
 ```
+
+On macOS this boots out + deletes the launchd plist and the installed binary,
+leaving `~/Library/Logs/server-vitals.log` in place.
 
 ## Configuration
 

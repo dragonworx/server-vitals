@@ -39,6 +39,16 @@ die()  { printf '\033[0;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 usage() { sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
 
+# --- OS dispatch ---------------------------------------------------------------
+# This file is the Linux/systemd installer. On macOS, hand off to the launchd
+# installer next to it; anything else is unsupported.
+OS="$(uname -s)"
+if [ "$OS" = "Darwin" ]; then
+  exec "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/install-macos.sh" "$@"
+elif [ "$OS" != "Linux" ]; then
+  die "unsupported OS: $OS (this installer supports Linux/systemd and macOS/launchd)"
+fi
+
 # --- parse args ----------------------------------------------------------------
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -51,17 +61,18 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+# --- fail fast before we touch sudo --------------------------------------------
+command -v python3 >/dev/null 2>&1 || die "python3 not found on PATH"
+command -v systemctl >/dev/null 2>&1 || die "systemctl not found (this installer targets systemd)"
+
 # --- need root -----------------------------------------------------------------
 if [ "$(id -u)" -ne 0 ]; then
-  log "installer needs root — re-running under sudo"
+  log "re-running under sudo (you may be prompted for your password)"
   exec sudo -E bash "$0" \
     $([ "$WITH_NGINX" -eq 1 ] && echo --with-nginx) \
     $([ "$DO_START" -eq 0 ] && echo --no-start) \
     --user "$RUN_USER"
 fi
-
-command -v python3 >/dev/null 2>&1 || die "python3 not found on PATH"
-command -v systemctl >/dev/null 2>&1 || die "systemctl not found (this installer targets systemd)"
 
 # --- locate sources (checkout dir, or fetch when piped) ------------------------
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo /nonexistent)"

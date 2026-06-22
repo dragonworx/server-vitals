@@ -20,6 +20,40 @@ PURGE_NGINX=0
 log() { printf '\033[0;36m==>\033[0m %s\n' "$*"; }
 ok()  { printf '\033[0;32m  ✓\033[0m %s\n' "$*"; }
 
+# --- macOS / launchd uninstall -------------------------------------------------
+# Mirror install-macos.sh: bootout + remove the plist and the binary, leaving the
+# log in place. Pass --system to target a LaunchDaemon install (default: agent).
+if [ "$(uname -s)" = "Darwin" ]; then
+  LABEL="com.dragonworx.server-vitals"
+  SYSTEM=0
+  for a in "$@"; do [ "$a" = "--system" ] && SYSTEM=1; done
+  if [ "$SYSTEM" -eq 1 ]; then
+    PLIST="/Library/LaunchDaemons/${LABEL}.plist"; DOMAIN="system"; LC="sudo launchctl"
+    LOG_FILE="/var/log/server-vitals.log"; PSUDO="sudo"
+  else
+    PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"; DOMAIN="gui/$(id -u)"; LC="launchctl"
+    LOG_FILE="$HOME/Library/Logs/server-vitals.log"; PSUDO=""
+  fi
+
+  log "stopping + unloading $LABEL"
+  $LC bootout "${DOMAIN}/${LABEL}" >/dev/null 2>&1 \
+    || $LC bootout "$DOMAIN" "$PLIST" >/dev/null 2>&1 \
+    || $LC unload -w "$PLIST" >/dev/null 2>&1 || true
+  [ -f "$PLIST" ] && $PSUDO rm -f "$PLIST" && ok "removed $PLIST"
+
+  # the binary may live in either dir install-macos.sh might have chosen
+  for d in /usr/local/bin /opt/homebrew/bin; do
+    if [ -f "$d/server-vitals.py" ]; then
+      { [ -w "$d" ] && rm -f "$d/server-vitals.py"; } || sudo rm -f "$d/server-vitals.py"
+      ok "removed $d/server-vitals.py"
+    fi
+  done
+
+  [ -f "$LOG_FILE" ] && echo "    (left log in place: $LOG_FILE)"
+  ok "uninstalled"
+  exit 0
+fi
+
 if [ "$(id -u)" -ne 0 ]; then
   exec sudo bash "$0" "$@"
 fi
