@@ -468,11 +468,15 @@ STATS_HTML = r"""<!doctype html>
     font-family: "Avenir Next", "Segoe UI", system-ui, -apple-system,
       "Helvetica Neue", Arial, sans-serif;
     white-space: nowrap;
-    /* A wave of light/dark grey sweeps through the title. One cycle takes
-       --pulse-duration (set from JS to the poll interval — one sweep per poll).
-       The bright band is the wave crest moving across the text. */
+    /* A wave sweeps through the title. Its base/crest colours are the current
+       machine-status hue (--title-base / --title-crest, set from JS on the shared
+       green→orange→red ramp; flat red when hung). One cycle takes --pulse-duration
+       (set from JS to the poll interval — one sweep per poll); the bright band is
+       the wave crest moving across the text. */
     background: linear-gradient(100deg,
-      #5b636d 0%, #5b636d 38%, #828a94 50%, #5b636d 62%, #5b636d 100%);
+      var(--title-base, #5b636d) 0%, var(--title-base, #5b636d) 38%,
+      var(--title-crest, #828a94) 50%,
+      var(--title-base, #5b636d) 62%, var(--title-base, #5b636d) 100%);
     background-size: 200% 100%;
     -webkit-background-clip: text; background-clip: text;
     -webkit-text-fill-color: transparent; color: transparent;
@@ -484,29 +488,19 @@ STATS_HTML = r"""<!doctype html>
     to   { background-position: 0% 0; }
   }
   @media (prefers-reduced-motion: reduce) {
-    header h1 { animation: none; -webkit-text-fill-color: #cfd6de; color: #cfd6de; }
+    header h1 { animation: none;
+      -webkit-text-fill-color: var(--title-base, #cfd6de);
+      color: var(--title-base, #cfd6de); }
   }
-  /* Status row under the banner: the status word centred, followed by each
-     metric (C/M/D) tinted by its own value on a green→orange→red ramp. The
-     strip's own backdrop is washed with the current heuristic colour (green →
-     orange → red, blended toward black) and eased on change via a transition.
-     The status word is coloured inline (JS) by the same 0..1 pressure score that
-     picks the word, on the shared green→orange→red ramp — green when idle, red at
-     full load — so the label's hue and the backdrop always agree. `hung` overrides
-     to a blinking red. */
-  #statusbar { flex: 0 0 auto; height: 30px; display: flex;
-    align-items: center; justify-content: center;
-    background: #21262d; border-bottom: 1px solid #2b323a;
-    transition: background-color .6s ease; }
-  #statusbar .status { margin: 0; pointer-events: none; white-space: nowrap;
-    font-size: 12px; font-weight: 700; letter-spacing: .14em;
-    text-transform: uppercase; color: #f4f6f8;
-    /* thin black drop shadow, +1/+1 offset, 15% black */
-    text-shadow: 1px 1px 0 rgba(0,0,0,.15);
-    transition: color .6s ease; }
-  #statusbar .status .st-metric { color: inherit; }
-  #statusbar .status.st-hung { animation: hung-blink 1s steps(2) infinite; }
-  @keyframes hung-blink { 50% { opacity: .35; } }
+  /* Status row under the banner is a heat-map strip: one vertical block per poll,
+     coloured by the overall machine-pressure score on the shared green→orange→red
+     ramp, so the bar reads as a scrolling timeline of how hot the box has been.
+     Oldest sample at the left, newest at the leading edge (same direction as the
+     graphs). Failed polls render as faint red gaps. Painted to a <canvas> that
+     fills the strip (redrawn by renderHeat on every poll/resize). */
+  #statusbar { flex: 0 0 auto; height: 30px;
+    background: #0e1216; border-bottom: 1px solid #2b323a; }
+  #statusbar #heatmap { display: block; width: 100%; height: 100%; }
   header .controls { margin-left: auto; display: flex; gap: 12px; align-items: center; }
   header .controls .ctl { display: inline-flex; align-items: center; gap: 5px;
     font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: #9ba6b2; }
@@ -544,8 +538,16 @@ STATS_HTML = r"""<!doctype html>
   #cpu-panel  .panel-title { color: #6ddc8a; }
   #mem-panel  .panel-title { color: #6db5dc; }
   #disk-panel .panel-title { color: #dcb86d; }
-  .panel-value { font-size: 13px; color: #e7ebf0; }
-  .panel-value .sub { color: #6c7886; margin-left: 8px; font-size: 11px; }
+  .panel-value { display: flex; align-items: center; gap: 9px;
+    font-size: 13px; color: #e7ebf0; }
+  .panel-value .sub { color: #6c7886; font-size: 11px; }
+  /* The percentage read-out sits far right as a compact pill. Its fill is the
+     panel's graph keyline colour darkened ~40% (per-panel below); text stays white. */
+  .panel-value .pill { color: #fff; font-weight: 600; font-size: 12px;
+    padding: 1px 9px; border-radius: 999px; line-height: 1.55; white-space: nowrap; }
+  #cpu-panel  .pill { background: #418352; }   /* #6ddc8a × .85 × .70 */
+  #mem-panel  .pill { background: #416c83; }   /* #6db5dc × .85 × .70 */
+  #disk-panel .pill { background: #836d41; }   /* #dcb86d × .85 × .70 */
   svg { display: block; width: 100%; overflow: visible; }
   /* The single-series panels let their graph grow to fill the panel height. */
   .panel > svg { flex: 1 1 auto; min-height: 0; }
@@ -591,7 +593,6 @@ STATS_HTML = r"""<!doctype html>
   @media (max-width: 480px) {
     header { padding: 10px 12px; gap: 8px 12px; flex-wrap: wrap; }
     header h1 { font-size: 16px; }
-    #statusbar .status { font-size: 11px; letter-spacing: .04em; }
     header .controls { gap: 8px; }
     header .controls .ctl { font-size: 10px; gap: 4px; }
     main { padding: 10px 12px; gap: 10px; }
@@ -629,9 +630,7 @@ STATS_HTML = r"""<!doctype html>
       title="Pause polling" aria-label="Pause polling" aria-pressed="false">⏸</button>
   </div>
 </header>
-<div id="statusbar">
-  <span id="status" class="status st-idle">connecting…</span>
-</div>
+<div id="statusbar"><canvas id="heatmap"></canvas></div>
 <main>
   <section class="panel" id="cores-panel">
     <div class="panel-head">
@@ -642,21 +641,21 @@ STATS_HTML = r"""<!doctype html>
   <section class="panel" id="cpu-panel">
     <div class="panel-head">
       <div class="panel-title">CPU</div>
-      <div class="panel-value"><span id="cpu-now">—</span><span class="sub" id="cpu-sub"></span></div>
+      <div class="panel-value"><span class="sub" id="cpu-sub"></span><span class="pill" id="cpu-now">—</span></div>
     </div>
     <svg id="cpu-svg"></svg>
   </section>
   <section class="panel" id="mem-panel">
     <div class="panel-head">
       <div class="panel-title">Memory</div>
-      <div class="panel-value"><span id="mem-now">—</span><span class="sub" id="mem-sub"></span></div>
+      <div class="panel-value"><span class="sub" id="mem-sub"></span><span class="pill" id="mem-now">—</span></div>
     </div>
     <svg id="mem-svg"></svg>
   </section>
   <section class="panel" id="disk-panel">
     <div class="panel-head">
       <div class="panel-title">Disk</div>
-      <div class="panel-value"><span id="disk-now">—</span><span class="sub" id="disk-sub"></span></div>
+      <div class="panel-value"><span class="sub" id="disk-sub"></span><span class="pill" id="disk-now">—</span></div>
     </div>
     <svg id="disk-svg"></svg>
   </section>
@@ -690,8 +689,8 @@ STATS_HTML = r"""<!doctype html>
   // Points kept = window seconds / poll seconds.
   let MAX_POINTS = Math.max(2, Math.round(windowMin * 60 / pollSec));
 
-  // The title's grey wave completes one cycle in half the poll interval — i.e.
-  // twice as fast as the graph advances. Re-applied whenever the poll changes.
+  // The title's colour wave completes one cycle per poll interval, so it advances
+  // in step with the graphs. Re-applied whenever the poll changes.
   function applyPulseTiming() {
     document.documentElement.style.setProperty('--pulse-duration', pollMs + 'ms');
   }
@@ -706,8 +705,8 @@ STATS_HTML = r"""<!doctype html>
   //                   so that range stays cool; only real pressure climbs).
   //   • load/core   — 1-min load ÷ cores, the classic over-subscription gauge,
   //                   normalised so 2× core count reads as fully maxed.
-  // This ONE number drives both the status word (scoreWord) and every colour, so
-  // the label and the backdrop can never disagree.
+  // This ONE number drives both the "Server Vitals" title colour and the newest
+  // block on the heat-map strip, so the two can never disagree.
   function loadScore(cpu, mem, loadPerCore) {
     const cpuS  = clamp01(cpu / 100);
     const memS  = clamp01((mem - 50) / 45);
@@ -715,49 +714,14 @@ STATS_HTML = r"""<!doctype html>
     return clamp01(Math.max(cpuS, memS, loadS));
   }
 
-  // Names for bands of the 0..1 score, finer-grained than the old 4-way bucketing
-  // so the word tracks real change instead of jumping. The word flips exactly as
-  // the backdrop crosses each threshold. A wildly over-subscribed box (load ≥
-  // 4×cores) — or one that stops answering — is reported as "hung" (handled in
-  // tick()). States: idle · light · moderate · busy · heavy · critical · overloaded.
-  const LOAD_BANDS = [
-    [0.08, 'idle'], [0.25, 'light'], [0.45, 'moderate'], [0.65, 'busy'],
-    [0.82, 'heavy'], [0.95, 'critical'],
-  ];
-  function scoreWord(score) {
-    for (const [max, word] of LOAD_BANDS) if (score <= max) return word;
-    return 'overloaded';
-  }
-
-  // The state word (e.g. "light") stays white. `detail` is either a plain string
-  // appended after it (the hung diagnostics), or an array of {label, pct} metrics
-  // rendered as "(C 56%, M 43%, D 32%)" with each metric tinted by its own value.
-  function setStatus(state, detail, heat) {
-    const s = el('status');
-    const h = heat == null ? 1 : heat;
-    // `hung` blinks red (its own class); every other word is tinted on the shared
-    // green→orange→red ramp by the same score that named it — green at idle, red
-    // at full load — so the label hue matches the backdrop wash.
-    s.className = 'status' + (state === 'hung' ? ' st-hung' : '');
-    s.style.color = state === 'hung' ? '#ff4d4d' : metricColor(h * 100);
-    el('statusbar').style.backgroundColor = statusBg(h);
-    s.textContent = '';
-    s.appendChild(document.createTextNode(state));
-    if (!detail) return;
-    if (typeof detail === 'string') {
-      s.appendChild(document.createTextNode(' ' + detail));
-      return;
-    }
-    s.appendChild(document.createTextNode(' ('));
-    detail.forEach((m, i) => {
-      if (i) s.appendChild(document.createTextNode(', '));
-      const span = document.createElement('span');
-      span.className = 'st-metric';
-      span.style.color = metricColor(m.pct);
-      span.textContent = m.label + ': ' + Math.round(m.pct) + '%';
-      s.appendChild(span);
-    });
-    s.appendChild(document.createTextNode(')'));
+  // Recolour the "Server Vitals" title from the 0..1 pressure score: base hue +
+  // a brighter crest for the moving wave, both on the shared green→orange→red
+  // ramp (green when idle, red at full load). `hung` — an unresponsive or wildly
+  // over-subscribed box (load ≥ 4×cores) — forces the title to a flat red.
+  function applyStatus(heat, hung) {
+    const root = document.documentElement.style;
+    root.setProperty('--title-base',  hung ? '#ff4d4d' : heatHsl(heat, 54));
+    root.setProperty('--title-crest', hung ? '#ff8f8f' : heatHsl(heat, 80));
   }
 
   // Filled-area gradient endpoints, shared by every chart: `from` paints the
@@ -793,29 +757,49 @@ STATS_HTML = r"""<!doctype html>
   }
 
   const clamp01 = x => x < 0 ? 0 : x > 1 ? 1 : x;
-  // Tint a metric word on the status row by its percentage: 0% green → 50% orange
-  // → 100% red. Kept bright (high lightness) so the coloured text stays legible
-  // on the dark-grey strip.
-  function metricColor(pct) {
-    const p = clamp01(pct / 100);
+  // Colour for a 0..1 pressure score on the shared green→orange→red ramp. `light`
+  // is the HSL lightness, so one hue ramp serves both the vivid heat-map blocks
+  // (~45) and the brighter title crest (~80).
+  function heatHsl(heat, light) {
+    const p = clamp01(heat);
     const hue = p < 0.5 ? 140 - (140 - 38) * (p / 0.5)   // green → orange
                         : 38 - 38 * ((p - 0.5) / 0.5);    // orange → red
-    const sat = 70 + 18 * p;   // 70% → 88%
-    return 'hsl(' + hue.toFixed(0) + ',' + sat.toFixed(0) + '%,60%)';
+    const sat = 68 + 20 * p;   // 68% → 88%
+    return 'hsl(' + hue.toFixed(0) + ',' + sat.toFixed(0) + '%,' + light + '%)';
   }
 
-  // Backdrop colour for the status strip from a 0..1 heat: interpolate the shared
-  // green→orange→red ramp, then blend toward black (× DARKEN) so the bar stays
-  // dark — e.g. heat 0 → green #27c93f darkens to ≈ #06220c.
-  const STATUS_BG_DARKEN = 0.17;
-  function statusBg(heat) {
-    const stops = [[39, 201, 63], [255, 159, 64], [255, 77, 77]];  // FROM/MID/TO
-    const p = clamp01(heat);
-    const seg = p < 0.5 ? 0 : 1;
-    const t = p < 0.5 ? p / 0.5 : (p - 0.5) / 0.5;
-    const a = stops[seg], b = stops[seg + 1];
-    const ch = i => Math.round((a[i] + (b[i] - a[i]) * t) * STATUS_BG_DARKEN);
-    return 'rgb(' + ch(0) + ',' + ch(1) + ',' + ch(2) + ')';
+  // Heat-map strip: one vertical block per poll, oldest at left, painted to the
+  // #heatmap canvas. heatData holds the 0..1 score per slot (null = failed poll,
+  // drawn as a faint red gap). Columns are sized to MAX_POINTS so the strip and
+  // the graphs share the same time axis; redrawn on every poll and on resize.
+  const heatData = [];
+  function pushHeat(v) {
+    heatData.push(v);
+    if (heatData.length > MAX_POINTS) heatData.shift();
+  }
+  function renderHeat() {
+    const cv = el('heatmap');
+    if (!cv) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = cv.clientWidth, h = cv.clientHeight;
+    if (!w || !h) return;
+    cv.width = Math.round(w * dpr);
+    cv.height = Math.round(h * dpr);
+    const ctx = cv.getContext('2d');
+    ctx.fillStyle = '#0e1216';
+    ctx.fillRect(0, 0, cv.width, cv.height);
+    const colW = cv.width / MAX_POINTS;
+    // Right-anchor like the graphs: newest block at the right edge, older to the
+    // left, empty slots on the left until the window fills (matches xOffset in
+    // render() — same direction and speed as the line charts).
+    const off = MAX_POINTS - heatData.length;
+    for (let i = 0; i < heatData.length; i++) {
+      const v = heatData[i];
+      const x = Math.floor((off + i) * colW);
+      const x2 = Math.ceil((off + i + 1) * colW);
+      ctx.fillStyle = (v == null || isNaN(v)) ? 'rgba(255,77,77,.20)' : heatHsl(v, 45);
+      ctx.fillRect(x, 0, x2 - x, cv.height);
+    }
   }
 
   function ensureCores(count) {
@@ -1169,6 +1153,7 @@ STATS_HTML = r"""<!doctype html>
     for (let i = 0; i < coreSeries.length; i++) {
       render('core-svg-' + i, coreSeries[i], { compact: true, fixedMax: 100, yAxis: true });
     }
+    renderHeat();
   }
 
   let resizeTimer = null;
@@ -1182,6 +1167,7 @@ STATS_HTML = r"""<!doctype html>
     for (const s of all) {
       if (s.data.length > MAX_POINTS) s.data.splice(0, s.data.length - MAX_POINTS);
     }
+    if (heatData.length > MAX_POINTS) heatData.splice(0, heatData.length - MAX_POINTS);
   }
 
   const pollSel = el('poll-sel');
@@ -1241,7 +1227,7 @@ STATS_HTML = r"""<!doctype html>
 
   async function tick() {
     let ok = false;
-    let statusState = 'hung', statusDetail = null, statusHeat = 1;
+    let statusHeat = 1, statusHung = true;
     try {
       const r = await fetchWithTimeout('/stats?format=json', FETCH_TIMEOUT_MS);
       if (!r.ok) throw new Error('http ' + r.status);
@@ -1273,18 +1259,10 @@ STATS_HTML = r"""<!doctype html>
         ? j.load_average['1min'] : null;
       const coreCount = (typeof j.cpu_count === 'number' && j.cpu_count > 0) ? j.cpu_count : 1;
       const loadPerCore = load1 == null ? 0 : load1 / coreCount;
-      // One score names the state and washes the backdrop. A responsive but wildly
-      // over-subscribed box (load ≥ 4×cores) still reads as "hung".
+      // One score colours the title and the newest heat-map block. A responsive
+      // but wildly over-subscribed box (load ≥ 4×cores) still reads as "hung".
       statusHeat = loadScore(j.cpu_percent, j.memory_percent, loadPerCore);
-      statusState = loadPerCore >= 4 ? 'hung' : scoreWord(statusHeat);
-
-      // Per-metric read-out beside the status word — "(C: 56%, M: 43%, D: 32%)" —
-      // each tinted by its own value (green→orange→red) in setStatus().
-      statusDetail = [
-        { label: 'C', pct: j.cpu_percent },
-        { label: 'M', pct: j.memory_percent },
-        { label: 'D', pct: j.disk_percent },
-      ];
+      statusHung = loadPerCore >= 4;
 
       consecutiveFailures = 0;
       lastError = null;
@@ -1302,11 +1280,12 @@ STATS_HTML = r"""<!doctype html>
     }
 
     if (ok) {
-      setStatus(statusState, statusDetail, statusHeat);
+      pushHeat(statusHeat);
+      applyStatus(statusHeat, statusHung);
     } else {
-      // No response from the box → hung (red backdrop), with the failing-poll
-      // count + reason.
-      setStatus('hung', '· ' + consecutiveFailures + ' polls · ' + lastError, 1);
+      // No response from the box → faint-gap block on the strip + flat-red title.
+      pushHeat(null);
+      applyStatus(1, true);
     }
     renderAll();
 
