@@ -476,7 +476,7 @@ STATS_HTML = r"""<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Server Vitals</title>
 <style>
-  :root { color-scheme: dark; --strip-h: 24px; }
+  :root { color-scheme: dark; --strip-h: 14px; }
   html, body { margin: 0; padding: 0; height: 100%; background: #0b0d10; color: #d8dde3;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   /* Fill the viewport: fixed header, panels share the remaining height evenly. */
@@ -909,21 +909,16 @@ STATS_HTML = r"""<!doctype html>
     const ctx = cv.getContext('2d');
     ctx.fillStyle = '#0e1216';
     ctx.fillRect(0, 0, cv.width, cv.height);
-    // Timestamp-based: place each block at its actual time position so the strip
-    // stays in sync with the line graphs when poll interval or window changes.
-    const nowMs = Date.now();
-    const windowMs = displayWindowSec * 1000;
-    const pxPerMs = cv.width / windowMs;
-    const halfSlotMs = pollSec * 500;  // half the expected slot width in ms
-    const tsBase = timestamps.length - heatData.length;
+    // Uniform slot-based positioning: divide the canvas into MAX_POINTS equal slots
+    // so adjacent bars share the exact same boundary pixel regardless of timestamp jitter.
+    // Newest data at the right edge; empty slots on the left when buffer isn't full.
+    const N = MAX_POINTS;
+    const W = cv.width;
     for (let i = 0; i < heatData.length; i++) {
-      const tsIdx = tsBase + i;
-      const ts = (tsIdx >= 0 && tsIdx < timestamps.length) ? timestamps[tsIdx]
-               : nowMs - (heatData.length - 1 - i + 0.5) * pollSec * 1000;
-      const ageMidMs = nowMs - ts;
-      if (ageMidMs > windowMs + halfSlotMs) continue;
-      const x0 = Math.max(0, Math.floor(cv.width - (ageMidMs + halfSlotMs) * pxPerMs));
-      const x1 = Math.min(cv.width, Math.ceil(cv.width - (ageMidMs - halfSlotMs) * pxPerMs));
+      const slot = N - heatData.length + i;
+      if (slot < 0) continue;
+      const x0 = Math.round(slot * W / N);
+      const x1 = Math.round((slot + 1) * W / N);
       if (x1 <= x0) continue;
       const v = heatData[i];
       ctx.fillStyle = (v == null || isNaN(v)) ? 'rgba(255,77,77,.20)' : heatHsl(v, 45);
@@ -956,19 +951,14 @@ STATS_HTML = r"""<!doctype html>
     const ctx = cv.getContext('2d');
     ctx.fillStyle = '#0e1216';
     ctx.fillRect(0, 0, cv.width, cv.height);
-    const nowMs = Date.now();
-    const windowMs = displayWindowSec * 1000;
-    const pxPerMs = cv.width / windowMs;
-    const halfSlotMs = pollSec * 500;
-    const tsBase = timestamps.length - latencyData.length;
+    // Uniform slot-based positioning: same approach as renderHeat.
+    const NL = MAX_POINTS;
+    const WL = cv.width;
     for (let i = 0; i < latencyData.length; i++) {
-      const tsIdx = tsBase + i;
-      const ts = (tsIdx >= 0 && tsIdx < timestamps.length) ? timestamps[tsIdx]
-               : nowMs - (latencyData.length - 1 - i + 0.5) * pollSec * 1000;
-      const ageMidMs = nowMs - ts;
-      if (ageMidMs > windowMs + halfSlotMs) continue;
-      const x0 = Math.max(0, Math.floor(cv.width - (ageMidMs + halfSlotMs) * pxPerMs));
-      const x1 = Math.min(cv.width, Math.ceil(cv.width - (ageMidMs - halfSlotMs) * pxPerMs));
+      const slot = NL - latencyData.length + i;
+      if (slot < 0) continue;
+      const x0 = Math.round(slot * WL / NL);
+      const x1 = Math.round((slot + 1) * WL / NL);
       if (x1 <= x0) continue;
       const v = latencyData[i];
       ctx.fillStyle = (v == null || isNaN(v)) ? 'rgba(255,77,77,.20)' : latencyColor(v);
