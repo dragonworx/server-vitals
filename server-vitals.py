@@ -692,9 +692,16 @@ STATS_HTML = r"""<!doctype html>
   const FETCH_TIMEOUT_MS = 2000;
   const BASE_PAD_L = 44, BASE_PAD_R = 8, BASE_PAD_T = 8, BASE_PAD_B = 18;
 
-  const OPTIONS = [0.25, 0.5, 1, 1.5, 3, 5, 10, 30, 60];  // shared values: seconds for poll, minutes for window
+  // Unified option set in seconds — union of former poll-seconds and window-minutes converted to seconds,
+  // sorted shortest→longest. Both dropdowns use this same array with the same labels.
+  const OPTIONS = [0.25, 0.5, 1, 1.5, 3, 5, 10, 15, 30, 60, 90, 180, 300, 600, 1800, 3600];
   const POLL_KEY = 'stats:poll:sec';
-  const WINDOW_KEY = 'stats:window:min';
+  const WINDOW_KEY = 'stats:window:sec';
+  function formatDur(sec) {
+    if (sec < 60)   return sec + 's';
+    if (sec < 3600) return (sec / 60) + 'm';
+    return (sec / 3600) + 'h';
+  }
 
   function loadChoice(key, options, dflt) {
     try {
@@ -708,10 +715,10 @@ STATS_HTML = r"""<!doctype html>
   }
 
   let pollSec = loadChoice(POLL_KEY, OPTIONS, 1);
-  let windowMin = loadChoice(WINDOW_KEY, OPTIONS, 5);
+  let windowSec = loadChoice(WINDOW_KEY, OPTIONS, 300);
   let pollMs = pollSec * 1000;
   // Points kept = window seconds / poll seconds.
-  let MAX_POINTS = Math.max(2, Math.round(windowMin * 60 / pollSec));
+  let MAX_POINTS = Math.max(2, Math.round(windowSec / pollSec));
 
   // The title's colour wave completes one cycle per poll interval, so it advances
   // in step with the graphs. Re-applied whenever the poll changes.
@@ -746,6 +753,26 @@ STATS_HTML = r"""<!doctype html>
     const root = document.documentElement.style;
     root.setProperty('--title-base',  hung ? '#ff4d4d' : heatHsl(heat, 54));
     root.setProperty('--title-crest', hung ? '#ff8f8f' : heatHsl(heat, 80));
+  }
+
+  // Host label — when accessed via localhost/127.0.0.1 the browser is on the same
+  // machine, so default to showing "localhost" (or "127.0.0.1") rather than the
+  // outbound IP the server probes. Clicking the label toggles between the two.
+  const IS_LOCAL = ['localhost', '127.0.0.1'].includes(window.location.hostname);
+  let _serverIp = '';
+  let _serverHostname = '';
+  let _showLocal = true;  // only relevant when IS_LOCAL
+  function applyTitleIp() {
+    if (!_serverIp) return;
+    const h = document.getElementById('title-ip');
+    const display = IS_LOCAL && _showLocal ? window.location.hostname : _serverIp;
+    if (h.textContent !== display) h.textContent = display;
+    if (IS_LOCAL) {
+      h.title = _showLocal ? 'click to show server IP (' + _serverIp + ')'
+                           : 'click to show local hostname (' + window.location.hostname + ')';
+    }
+    const docTitle = _serverHostname ? _serverIp + ' (' + _serverHostname + ')' : _serverIp;
+    if (document.title !== docTitle) document.title = docTitle;
   }
 
   // Filled-area gradient endpoints, shared by every chart: `from` paints the
@@ -815,22 +842,22 @@ STATS_HTML = r"""<!doctype html>
   // so changing the poll interval never stretches or compresses the graphs.
   const timestamps = [];
 
-  // Eased display window — animates smoothly between windowMin values on zoom.
-  let displayWindowMin = windowMin;
-  let _easeRAF = null, _easeFrom = windowMin, _easeTarget = windowMin, _easeT0 = 0;
+  // Eased display window — animates smoothly between windowSec values on zoom.
+  let displayWindowSec = windowSec;
+  let _easeRAF = null, _easeFrom = windowSec, _easeTarget = windowSec, _easeT0 = 0;
   const EASE_MS = 350;
   function startWindowEase(to) {
-    _easeFrom = displayWindowMin;
+    _easeFrom = displayWindowSec;
     _easeTarget = to;
     _easeT0 = performance.now();
     if (_easeRAF) cancelAnimationFrame(_easeRAF);
     function step(now) {
       const t = Math.min(1, (now - _easeT0) / EASE_MS);
       const e = 1 - Math.pow(1 - t, 3);  // cubic ease-out
-      displayWindowMin = _easeFrom + (_easeTarget - _easeFrom) * e;
+      displayWindowSec = _easeFrom + (_easeTarget - _easeFrom) * e;
       renderAll();
       if (t < 1) _easeRAF = requestAnimationFrame(step);
-      else { displayWindowMin = _easeTarget; _easeRAF = null; renderAll(); }
+      else { displayWindowSec = _easeTarget; _easeRAF = null; renderAll(); }
     }
     _easeRAF = requestAnimationFrame(step);
   }
@@ -853,7 +880,7 @@ STATS_HTML = r"""<!doctype html>
     // Timestamp-based: place each block at its actual time position so the strip
     // stays in sync with the line graphs when poll interval or window changes.
     const nowMs = Date.now();
-    const windowMs = displayWindowMin * 60 * 1000;
+    const windowMs = displayWindowSec * 1000;
     const pxPerMs = cv.width / windowMs;
     const halfSlotMs = pollSec * 500;  // half the expected slot width in ms
     const tsBase = timestamps.length - heatData.length;
@@ -895,7 +922,7 @@ STATS_HTML = r"""<!doctype html>
     ctx.fillStyle = '#0e1216';
     ctx.fillRect(0, 0, cv.width, cv.height);
     const nowMs = Date.now();
-    const windowMs = displayWindowMin * 60 * 1000;
+    const windowMs = displayWindowSec * 1000;
     const pxPerMs = cv.width / windowMs;
     const halfSlotMs = pollSec * 500;
     const tsBase = timestamps.length - latencyData.length;
@@ -1130,7 +1157,7 @@ STATS_HTML = r"""<!doctype html>
     // x-axis labels — the plot spans the full configured window. Five evenly
     // spaced markers, each showing relative age plus the absolute clock time
     // (the absolute part in a lighter shade), e.g. "-5m 2:32pm".
-    const windowSec = displayWindowMin * 60;  // use animated value for smooth zoom
+    const windowSec = displayWindowSec;  // use animated value for smooth zoom
     const nowMs = Date.now();
     const TICKS = 5;
     const xLabels = compact ? [] : Array.from({ length: TICKS }, (_, i) => {
@@ -1157,7 +1184,7 @@ STATS_HTML = r"""<!doctype html>
     const n = data.length;
     // Timestamp-based x: each point placed at its real age so the horizontal scale
     // stays fixed to actual time regardless of poll interval.
-    const pxPerSec = PLOT_W / windowSec;  // pixels per second (windowSec = displayWindowMin*60)
+    const pxPerSec = PLOT_W / windowSec;  // pixels per second
     const tsBase = timestamps.length - n; // timestamps[tsBase+i] is the clock for data[i]
     const xAt = i => {
       const tsIdx = tsBase + i;
@@ -1305,19 +1332,26 @@ STATS_HTML = r"""<!doctype html>
     if (timestamps.length > MAX_POINTS) timestamps.splice(0, timestamps.length - MAX_POINTS);
   }
 
+  if (IS_LOCAL) {
+    const h = el('title-ip');
+    h.style.cursor = 'pointer';
+    h.addEventListener('click', () => { _showLocal = !_showLocal; applyTitleIp(); });
+  }
+
   const pollSel = el('poll-sel');
   const windowSel = el('window-sel');
   OPTIONS.forEach(v => {
-    pollSel.appendChild(Object.assign(document.createElement('option'), { value: v, textContent: v + 's' }));
-    windowSel.appendChild(Object.assign(document.createElement('option'), { value: v, textContent: v + 'm' }));
+    const lbl = formatDur(v);
+    pollSel.appendChild(Object.assign(document.createElement('option'), { value: v, textContent: lbl }));
+    windowSel.appendChild(Object.assign(document.createElement('option'), { value: v, textContent: lbl }));
   });
   pollSel.value = String(pollSec);
-  windowSel.value = String(windowMin);
+  windowSel.value = String(windowSec);
 
   pollSel.addEventListener('change', () => {
     pollSec = parseFloat(pollSel.value);
     pollMs = pollSec * 1000;
-    MAX_POINTS = Math.max(2, Math.round(windowMin * 60 / pollSec));
+    MAX_POINTS = Math.max(2, Math.round(windowSec / pollSec));
     applyPulseTiming();
     persist(POLL_KEY, pollSec);
     trimAll();
@@ -1328,11 +1362,11 @@ STATS_HTML = r"""<!doctype html>
   });
 
   windowSel.addEventListener('change', () => {
-    windowMin = parseFloat(windowSel.value);
-    MAX_POINTS = Math.max(2, Math.round(windowMin * 60 / pollSec));
-    persist(WINDOW_KEY, windowMin);
+    windowSec = parseFloat(windowSel.value);
+    MAX_POINTS = Math.max(2, Math.round(windowSec / pollSec));
+    persist(WINDOW_KEY, windowSec);
     trimAll();
-    startWindowEase(windowMin);  // animate the zoom transition
+    startWindowEase(windowSec);  // animate the zoom transition
   });
 
   function push(name, v) {
@@ -1399,10 +1433,9 @@ STATS_HTML = r"""<!doctype html>
       }
 
       if (j.server_ip) {
-        const h = el('title-ip');
-        if (h.textContent !== j.server_ip) h.textContent = j.server_ip;
-        const docTitle = j.hostname ? j.server_ip + ' (' + j.hostname + ')' : j.server_ip;
-        if (document.title !== docTitle) document.title = docTitle;
+        _serverIp = j.server_ip;
+        _serverHostname = j.hostname || '';
+        applyTitleIp();
       }
       el('cpu-now').textContent  = j.cpu_percent.toFixed(1) + '%';
       el('cpu-sub').textContent  = '';
