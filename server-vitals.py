@@ -1551,7 +1551,7 @@ STATS_HTML = r"""<!doctype html>
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "Server-Vitals/1.0"
+    server_version = "Server-Vitals/1.1"
     # HTTP/1.1 keeps the connection alive so the dashboard's frequent polls reuse
     # one TCP connection instead of reconnecting every tick. Safe because every
     # response carries a Content-Length.
