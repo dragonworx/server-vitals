@@ -820,10 +820,10 @@ STATS_HTML = r"""<!doctype html>
   }
 
   function latencyColor(ms) {
-    if (latencyMin === Infinity || latencyMax <= latencyMin) return 'hsl(120,65%,28%)';
+    if (latencyMin === Infinity || latencyMax <= latencyMin) return 'hsl(180,70%,45%)';
     const t = Math.min(1, Math.max(0, (ms - latencyMin) / (latencyMax - latencyMin)));
-    const hue = 120 * (1 - t);  // dark green (120) → dark red (0)
-    return 'hsl(' + hue.toFixed(0) + ',65%,28%)';
+    const hue = 180 + 40 * t;  // cyan (180) → blue (220)
+    return 'hsl(' + hue.toFixed(0) + ',70%,45%)';
   }
 
   // Heat-map strip: one vertical block per poll, oldest at left, painted to the
@@ -867,12 +867,30 @@ STATS_HTML = r"""<!doctype html>
     heatData.push(v);
     if (heatData.length > MAX_POINTS) heatData.shift();
   }
-  function fillSegments(ctx, segments, x, y) {
-    for (const { text, color } of segments) {
-      ctx.fillStyle = color;
-      ctx.fillText(text, x, y);
-      x += ctx.measureText(text).width;
+  const STRIP_WHITE = 'rgba(255,255,255,1)';
+  const STRIP_PAD   = 6;  // logical px from each edge
+  // Left: label. Center: min–max colored segments (measured and truly centred).
+  // Right: current value right-aligned. No reserved slots or padding.
+  function drawStripLabel(ctx, cv, dpr, y, label, centerSegs, curText) {
+    const pad = Math.round(STRIP_PAD * dpr);
+    ctx.textAlign = 'left';
+    ctx.fillStyle = STRIP_WHITE;
+    ctx.fillText(label, pad, y);
+    if (centerSegs.length) {
+      const totalW = centerSegs.reduce((w, s) => w + ctx.measureText(s.text).width, 0);
+      let x = (cv.width - totalW) / 2;
+      for (const s of centerSegs) {
+        ctx.fillStyle = s.color;
+        ctx.fillText(s.text, x, y);
+        x += ctx.measureText(s.text).width;
+      }
     }
+    if (curText) {
+      ctx.textAlign = 'right';
+      ctx.fillStyle = STRIP_WHITE;
+      ctx.fillText(curText, cv.width - pad, y);
+    }
+    ctx.textAlign = 'left';
   }
 
   function renderHeat() {
@@ -914,21 +932,11 @@ STATS_HTML = r"""<!doctype html>
     ctx.shadowOffsetX = 1 * dpr;
     ctx.shadowOffsetY = 1 * dpr;
     ctx.shadowBlur = 0;
-    const WHITE = 'rgba(255,255,255,1)';
-    const x0perf = Math.round(4 * dpr), y0perf = cv.height / 2;
-    if (cpuMin === Infinity) {
-      ctx.fillStyle = WHITE;
-      ctx.fillText('PERFORMANCE', x0perf, y0perf);
-    } else {
-      const segs = [
-        { text: 'PERFORMANCE: ', color: WHITE },
-        { text: cpuMin.toFixed(0) + '%',  color: GRAD_FROM },
-        { text: ' – ',                    color: WHITE },
-        { text: cpuMax.toFixed(0) + '%',  color: GRAD_TO },
-      ];
-      if (cpuLast != null) segs.push({ text: ' (' + cpuLast.toFixed(0) + '%)', color: WHITE });
-      fillSegments(ctx, segs, x0perf, y0perf);
-    }
+    drawStripLabel(ctx, cv, dpr, cv.height / 2, 'PERFORMANCE',
+      cpuMin === Infinity ? [] : [
+        { text: cpuMin.toFixed(0) + '% – ' + cpuMax.toFixed(0) + '%', color: STRIP_WHITE },
+      ],
+      cpuLast != null ? cpuLast.toFixed(0) + '%' : '');
     ctx.shadowColor = 'transparent';
   }
 
@@ -969,23 +977,13 @@ STATS_HTML = r"""<!doctype html>
     ctx.shadowOffsetX = 1 * dpr;
     ctx.shadowOffsetY = 1 * dpr;
     ctx.shadowBlur = 0;
-    const WHITE2 = 'rgba(255,255,255,1)';
-    const LAT_FROM = 'hsl(120,65%,28%)';
-    const LAT_TO   = 'hsl(0,65%,28%)';
-    const x0lat = Math.round(4 * dpr), y0lat = cv.height / 2;
-    if (latencyMin === Infinity) {
-      ctx.fillStyle = WHITE2;
-      ctx.fillText('LATENCY', x0lat, y0lat);
-    } else {
-      const segs = [
-        { text: 'LATENCY: ',                        color: WHITE2 },
-        { text: latencyMin.toFixed(0) + 'ms',       color: LAT_FROM },
-        { text: ' – ',                              color: WHITE2 },
-        { text: latencyMax.toFixed(0) + 'ms',       color: LAT_TO },
-      ];
-      if (latencyLast != null) segs.push({ text: ' (' + latencyLast.toFixed(0) + 'ms)', color: WHITE2 });
-      fillSegments(ctx, segs, x0lat, y0lat);
-    }
+    const LAT_FROM = 'hsl(180,70%,72%)';
+    const LAT_TO   = 'hsl(220,70%,72%)';
+    drawStripLabel(ctx, cv, dpr, cv.height / 2, 'LATENCY',
+      latencyMin === Infinity ? [] : [
+        { text: latencyMin.toFixed(0) + 'ms – ' + latencyMax.toFixed(0) + 'ms', color: STRIP_WHITE },
+      ],
+      latencyLast != null ? latencyLast.toFixed(0) + 'ms' : '');
     ctx.shadowColor = 'transparent';
   }
 
