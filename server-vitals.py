@@ -541,7 +541,7 @@ STATS_HTML = r"""<!doctype html>
   header button.ctl-btn::after { content: ''; display: block;
     width: 2px; height: 11px; background: #3a4553;
     transition: background 100ms; }
-  header button.ctl-btn::before { margin-right: 4px; }
+  header button.ctl-btn::before { margin-right: 6px; }
   header button.ctl-btn:hover::before,
   header button.ctl-btn:hover::after { background: #59697c; }
   /* Paused state: replace bars with a single filled green triangle. */
@@ -582,7 +582,8 @@ STATS_HTML = r"""<!doctype html>
   /* The percentage read-out sits far right as a compact pill. Its fill is the
      panel's graph keyline colour darkened ~40% (per-panel below); text stays white. */
   .panel-value .pill { color: #fff; font-weight: 600; font-size: 12px;
-    padding: 1px 9px; border-radius: 999px; line-height: 1.55; white-space: nowrap; }
+    padding: 1px 9px; border-radius: 999px; line-height: 1.55; white-space: nowrap;
+    min-width: 3.5em; text-align: center; box-sizing: border-box; }
   #cpu-panel  .pill { background: #418352; }   /* #6ddc8a × .85 × .70 */
   #mem-panel  .pill { background: #416c83; }   /* #6db5dc × .85 × .70 */
   #disk-panel .pill { background: #836d41; }   /* #dcb86d × .85 × .70 */
@@ -873,9 +874,13 @@ STATS_HTML = r"""<!doctype html>
   // Right: current value right-aligned. No reserved slots or padding.
   function drawStripLabel(ctx, cv, dpr, y, label, centerSegs, curText) {
     const pad = Math.round(STRIP_PAD * dpr);
+    const boldFont = ctx.font;
+    const normalFont = boldFont.replace('bold ', '');
     ctx.textAlign = 'left';
+    ctx.font = normalFont;
     ctx.fillStyle = STRIP_WHITE;
     ctx.fillText(label, pad, y);
+    ctx.font = boldFont;
     if (centerSegs.length) {
       const totalW = centerSegs.reduce((w, s) => w + ctx.measureText(s.text).width, 0);
       let x = (cv.width - totalW) / 2;
@@ -1473,12 +1478,12 @@ STATS_HTML = r"""<!doctype html>
         _serverHostname = j.hostname || '';
         applyTitleIp();
       }
-      el('cpu-now').textContent  = j.cpu_percent.toFixed(1) + '%';
+      el('cpu-now').textContent  = Math.round(j.cpu_percent) + '%';
       el('cpu-sub').textContent  = '';
-      el('mem-now').textContent  = j.memory_percent.toFixed(1) + '%';
+      el('mem-now').textContent  = Math.round(j.memory_percent) + '%';
       el('mem-sub').textContent  = fmtSize(j.memory_used_mb, 'MB') + ' / ' +
                                    fmtSize(j.memory_total_mb, 'MB');
-      el('disk-now').textContent = j.disk_percent.toFixed(1) + '%';
+      el('disk-now').textContent = Math.round(j.disk_percent) + '%';
       el('disk-sub').textContent = fmtSize(j.disk_used_gb, 'GB') + ' / ' +
                                    fmtSize(j.disk_total_gb, 'GB');
 
