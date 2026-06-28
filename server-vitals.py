@@ -932,7 +932,7 @@ STATS_HTML = r"""<!doctype html>
     ctx.shadowOffsetX = 1 * dpr;
     ctx.shadowOffsetY = 1 * dpr;
     ctx.shadowBlur = 0;
-    drawStripLabel(ctx, cv, dpr, cv.height / 2, 'PERFORMANCE',
+    drawStripLabel(ctx, cv, dpr, cv.height / 2, 'HEALTH',
       cpuMin === Infinity ? [] : [
         { text: cpuMin.toFixed(0) + '% – ' + cpuMax.toFixed(0) + '%', color: STRIP_WHITE },
       ],
@@ -974,7 +974,7 @@ STATS_HTML = r"""<!doctype html>
     ctx.shadowBlur = 0;
     const LAT_FROM = 'hsl(180,70%,72%)';
     const LAT_TO   = 'hsl(220,70%,72%)';
-    drawStripLabel(ctx, cv, dpr, cv.height / 2, 'LATENCY',
+    drawStripLabel(ctx, cv, dpr, cv.height / 2, 'PING',
       latencyMin === Infinity ? [] : [
         { text: latencyMin.toFixed(0) + 'ms – ' + latencyMax.toFixed(0) + 'ms', color: STRIP_WHITE },
       ],
@@ -1551,7 +1551,7 @@ STATS_HTML = r"""<!doctype html>
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "Server-Vitals/1.1"
+    server_version = "Server-Vitals/1.1.1"
     # HTTP/1.1 keeps the connection alive so the dashboard's frequent polls reuse
     # one TCP connection instead of reconnecting every tick. Safe because every
     # response carries a Content-Length.
