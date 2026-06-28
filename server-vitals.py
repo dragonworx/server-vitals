@@ -592,7 +592,7 @@ STATS_HTML = r"""<!doctype html>
   #cpu-panel  .pill { background: #418352; }   /* #6ddc8a × .85 × .70 */
   #mem-panel  .pill { background: #416c83; }   /* #6db5dc × .85 × .70 */
   #disk-panel .pill { background: #836d41; }   /* #dcb86d × .85 × .70 */
-  svg { display: block; width: 100%; overflow: visible; }
+  svg { display: block; width: 100%; overflow: hidden; }
   /* The single-series panels let their graph grow to fill the panel height. */
   .panel > svg { flex: 1 1 auto; min-height: 0; }
   .grid { stroke: #20262d; stroke-width: 1; }
