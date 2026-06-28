@@ -15,6 +15,7 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 
+VERSION = "1.1.1"
 LISTEN = ("127.0.0.1", 9999)
 HOSTNAME = "www.fresneldigital.com"  # shown in browser tab; set "" to use system FQDN
 SAMPLE_INTERVAL = 0.25  # seconds between background CPU samples
@@ -481,7 +482,7 @@ STATS_HTML = r"""<!doctype html>
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   /* Fill the viewport: fixed header, panels share the remaining height evenly. */
   body { display: flex; flex-direction: column; overflow: hidden; }
-  header { flex: 0 0 auto; padding: 12px 18px; border-bottom: 1px solid #20262d;
+  header { flex: 0 0 auto; padding: 12px 18px; border-bottom: none;
     display: flex; gap: 18px; align-items: center; }
   header h1 { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: .14em;
     font-family: "Avenir Next", "Segoe UI", system-ui, -apple-system,
@@ -517,11 +518,15 @@ STATS_HTML = r"""<!doctype html>
      Oldest sample at the left, newest at the leading edge (same direction as the
      graphs). Failed polls render as faint red gaps. Painted to a <canvas> that
      fills the strip (redrawn by renderHeat on every poll/resize). */
+  /* The two top strips share one rounded, bordered box that matches the panels.
+     overflow:hidden clips the canvases to the rounded corners. */
+  #topstrips { flex: 0 0 auto; margin: 12px 18px 0; background: #0e1216;
+    border: 1px solid #20262d; border-radius: 6px; overflow: hidden; }
   #statusbar { flex: 0 0 auto; height: var(--strip-h);
     background: #0e1216; border-bottom: none; }
   #statusbar #heatmap { display: block; width: 100%; height: 100%; }
   #latencybar { flex: 0 0 auto; height: var(--strip-h);
-    background: #0e1216; border-bottom: 1px solid #2b323a; }
+    background: #0e1216; border-bottom: none; }
   #latencybar #latencymap { display: block; width: 100%; height: 100%; }
   header .controls { margin-left: auto; display: flex; gap: 12px; align-items: center; }
   header .controls .ctl { display: inline-flex; align-items: center; gap: 5px;
@@ -627,6 +632,8 @@ STATS_HTML = r"""<!doctype html>
     font-size: 11px; color: #6c7886; border-top: 1px solid #20262d; }
   footer a { color: #9ba6b2; text-decoration: none; }
   footer a:hover { color: #d8dde3; text-decoration: underline; }
+  footer a.ver { color: #4b545e; margin-right: 8px; }
+  footer a.ver:hover { color: #6c7886; text-decoration: underline; }
   /* Portrait phones (iPhone ≈ 390px): let the header controls wrap below the
      title instead of overflowing, and tighten paddings/grids to fit the column. */
   @media (max-width: 480px) {
@@ -655,8 +662,10 @@ STATS_HTML = r"""<!doctype html>
       title="Pause polling" aria-label="Pause polling" aria-pressed="false"></button>
   </div>
 </header>
-<div id="statusbar"><canvas id="heatmap"></canvas></div>
-<div id="latencybar"><canvas id="latencymap"></canvas></div>
+<div id="topstrips">
+  <div id="statusbar"><canvas id="heatmap"></canvas></div>
+  <div id="latencybar"><canvas id="latencymap"></canvas></div>
+</div>
 <main>
   <section class="panel" id="cores-panel">
     <div class="panel-head">
@@ -686,7 +695,8 @@ STATS_HTML = r"""<!doctype html>
     <svg id="disk-svg"></svg>
   </section>
 </main>
-<footer>Made with ❤️ by <a href="https://github.com/dragonworx/server-vitals"
+<footer><a class="ver" href="https://github.com/dragonworx/server-vitals"
+  target="_blank" rel="noopener noreferrer">v__VERSION__</a>Made with ❤️ by <a href="https://github.com/dragonworx/server-vitals"
   target="_blank" rel="noopener noreferrer">dragonworx</a></footer>
 <script>
 (() => {
@@ -839,6 +849,16 @@ STATS_HTML = r"""<!doctype html>
   let cpuMin = Infinity;
   let cpuMax = -Infinity;
   let cpuLast = null;
+  // Smoothed min/max for the strip ranges. A new extreme is captured immediately,
+  // but otherwise each bound drifts toward the live value by RANGE_DECAY per sample.
+  // So a one-off spike pushes the range out, then averages back to typical values
+  // over the following polls instead of latching to the all-time extreme forever.
+  const RANGE_DECAY = 0.1;
+  function avgRange(lo, hi, v) {
+    hi = (v > hi) ? v : hi + RANGE_DECAY * (v - hi);
+    lo = (v < lo) ? v : lo + RANGE_DECAY * (v - lo);
+    return [lo, hi];
+  }
   // Wall-clock timestamp (ms) for each tick, kept parallel to series/heatData.
   // Timestamp-based x-positioning keeps the horizontal scale fixed to real time
   // so changing the poll interval never stretches or compresses the graphs.
@@ -869,19 +889,30 @@ STATS_HTML = r"""<!doctype html>
     if (heatData.length > MAX_POINTS) heatData.shift();
   }
   const STRIP_WHITE = 'rgba(255,255,255,1)';
-  const STRIP_PAD   = 6;  // logical px from each edge
-  // Left: label. Center: min–max colored segments (measured and truly centred).
-  // Right: current value right-aligned. No reserved slots or padding.
-  function drawStripLabel(ctx, cv, dpr, y, label, centerSegs, curText) {
-    const pad = Math.round(STRIP_PAD * dpr);
+  const STRIP_LABEL = 'rgba(176,186,196,.9)';  // light grey for the section label
+  const STRIP_PAD   = 6;  // logical px from each edge (fallback only)
+  // Align the strip text with the graph panels below: left label sits at the graph's
+  // left edge, right value at the graph's right edge. Insets measured against a panel SVG.
+  function stripInsets(cv) {
+    const ref = el('cpu-svg') || el('mem-svg') || el('disk-svg');
+    if (!ref) return { left: STRIP_PAD, right: STRIP_PAD };
+    const r = ref.getBoundingClientRect(), c = cv.getBoundingClientRect();
+    if (!r.width || !c.width) return { left: STRIP_PAD, right: STRIP_PAD };
+    return { left: Math.max(0, r.left - c.left), right: Math.max(0, c.right - r.right) };
+  }
+  // Left: section label (light grey). Center: min–max colored segments (truly centred).
+  // Right: current value right-aligned. Insets align with the graphs below.
+  function drawStripLabel(ctx, cv, dpr, y, label, centerSegs, curText, insets) {
+    const padL = Math.round((insets ? insets.left : STRIP_PAD) * dpr);
+    const padR = Math.round((insets ? insets.right : STRIP_PAD) * dpr);
     const boldFont = ctx.font;
     const normalFont = boldFont.replace('bold ', '');
     ctx.textAlign = 'left';
     ctx.font = normalFont;
-    ctx.fillStyle = STRIP_WHITE;
-    ctx.fillText(label, pad, y);
-    ctx.font = boldFont;
+    ctx.fillStyle = STRIP_LABEL;
+    ctx.fillText(label, padL, y);
     if (centerSegs.length) {
+      ctx.font = normalFont;
       const totalW = centerSegs.reduce((w, s) => w + ctx.measureText(s.text).width, 0);
       let x = (cv.width - totalW) / 2;
       for (const s of centerSegs) {
@@ -891,9 +922,10 @@ STATS_HTML = r"""<!doctype html>
       }
     }
     if (curText) {
+      ctx.font = boldFont;
       ctx.textAlign = 'right';
       ctx.fillStyle = STRIP_WHITE;
-      ctx.fillText(curText, cv.width - pad, y);
+      ctx.fillText(curText, cv.width - padR, y);
     }
     ctx.textAlign = 'left';
   }
@@ -924,7 +956,7 @@ STATS_HTML = r"""<!doctype html>
       ctx.fillStyle = (v == null || isNaN(v)) ? 'rgba(255,77,77,.20)' : heatHsl(v, 45);
       ctx.fillRect(x0, 0, x1 - x0, cv.height);
     }
-    ctx.font = 'bold ' + Math.round(13 * dpr) + 'px ui-monospace,monospace';
+    ctx.font = 'bold ' + Math.round(10.53 * dpr) + 'px ui-monospace,monospace';
     ctx.fillStyle = 'rgba(255,255,255,1)';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
@@ -936,7 +968,7 @@ STATS_HTML = r"""<!doctype html>
       cpuMin === Infinity ? [] : [
         { text: cpuMin.toFixed(0) + '% – ' + cpuMax.toFixed(0) + '%', color: STRIP_WHITE },
       ],
-      cpuLast != null ? cpuLast.toFixed(0) + '%' : '');
+      cpuLast != null ? cpuLast.toFixed(0) + '%' : '', stripInsets(cv));
     ctx.shadowColor = 'transparent';
   }
 
@@ -964,7 +996,7 @@ STATS_HTML = r"""<!doctype html>
       ctx.fillStyle = (v == null || isNaN(v)) ? 'rgba(255,77,77,.20)' : latencyColor(v);
       ctx.fillRect(x0, 0, x1 - x0, cv.height);
     }
-    ctx.font = 'bold ' + Math.round(13 * dpr) + 'px ui-monospace,monospace';
+    ctx.font = 'bold ' + Math.round(10.53 * dpr) + 'px ui-monospace,monospace';
     ctx.fillStyle = 'rgba(255,255,255,1)';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
@@ -978,7 +1010,7 @@ STATS_HTML = r"""<!doctype html>
       latencyMin === Infinity ? [] : [
         { text: latencyMin.toFixed(0) + 'ms – ' + latencyMax.toFixed(0) + 'ms', color: STRIP_WHITE },
       ],
-      latencyLast != null ? latencyLast.toFixed(0) + 'ms' : '');
+      latencyLast != null ? latencyLast.toFixed(0) + 'ms' : '', stripInsets(cv));
     ctx.shadowColor = 'transparent';
   }
 
@@ -1450,8 +1482,7 @@ STATS_HTML = r"""<!doctype html>
       push('mem',  j.memory_percent);
       push('disk', j.disk_percent);
       cpuLast = j.cpu_percent;
-      if (j.cpu_percent < cpuMin) cpuMin = j.cpu_percent;
-      if (j.cpu_percent > cpuMax) cpuMax = j.cpu_percent;
+      [cpuMin, cpuMax] = avgRange(cpuMin, cpuMax, j.cpu_percent);
 
       const cores = Array.isArray(j.cpu_cores) ? j.cpu_cores : [];
       if (cores.length) {
@@ -1500,8 +1531,7 @@ STATS_HTML = r"""<!doctype html>
 
     if (latencyMs != null) {
       latencyLast = latencyMs;
-      if (latencyMs < latencyMin) latencyMin = latencyMs;
-      if (latencyMs > latencyMax) latencyMax = latencyMs;
+      [latencyMin, latencyMax] = avgRange(latencyMin, latencyMax, latencyMs);
     }
     latencyData.push(latencyMs);
     if (latencyData.length > MAX_POINTS) latencyData.shift();
@@ -1549,9 +1579,12 @@ STATS_HTML = r"""<!doctype html>
 </html>
 """
 
+# Single source of truth for the version: stamp it into the dashboard footer once.
+STATS_HTML = STATS_HTML.replace("__VERSION__", VERSION)
+
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "Server-Vitals/1.1.1"
+    server_version = "Server-Vitals/" + VERSION
     # HTTP/1.1 keeps the connection alive so the dashboard's frequent polls reuse
     # one TCP connection instead of reconnecting every tick. Safe because every
     # response carries a Content-Length.
