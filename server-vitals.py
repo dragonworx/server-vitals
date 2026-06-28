@@ -15,7 +15,7 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 
-VERSION = "1.1.2"
+VERSION = "1.1.3"
 LISTEN = ("127.0.0.1", 9999)
 HOSTNAME = "www.fresneldigital.com"  # shown in browser tab; set "" to use system FQDN
 SAMPLE_INTERVAL = 0.25  # seconds between background CPU samples
@@ -563,7 +563,7 @@ STATS_HTML = r"""<!doctype html>
     display: grid; grid-template-rows: repeat(4, 1fr); gap: 12px; }
   .panel { background: #11151a; border: 1px solid #20262d; border-radius: 6px;
     padding: 8px 12px 6px; display: flex; flex-direction: column; min-height: 0;
-    position: relative; }
+    position: relative; overflow: hidden; }
   /* Soft inner shadow down the left and right edges, so the graph reads as if it
      slips under the panel edges. Overlays the SVG; never intercepts clicks. The
      matching corner radii keep the panel's rounded corners clean. */
@@ -596,7 +596,8 @@ STATS_HTML = r"""<!doctype html>
   /* The single-series panels let their graph grow to fill the panel height. */
   .panel > svg { flex: 1 1 auto; min-height: 0; }
   .grid { stroke: #20262d; stroke-width: 1; }
-  .axis { fill: #6c7886; font-size: 10px; font-family: inherit; }
+  /* paint-order halo keeps the y labels readable where they overlay the chart fill. */
+  .axis { fill: #6c7886; font-size: 10px; font-family: inherit; paint-order: stroke; stroke: #0e1216; stroke-width: 2.2px; stroke-linejoin: round; }
   .axis.axis-mini { font-size: 9px; }
   /* Absolute clock time sits a shade lighter than the relative age. */
   .axis-abs { fill: #97a3b2; }
@@ -619,14 +620,18 @@ STATS_HTML = r"""<!doctype html>
   .cores { flex: 1 1 auto; min-height: 0; display: grid; gap: 8px;
     grid-auto-rows: 1fr;
     grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
-  .core { background: #0e1216; border: 1px solid #1b2128; border-radius: 5px;
-    padding: 4px 7px 2px; display: flex; flex-direction: column; min-height: 0;
-    transition: background 600ms linear; }
-  .core-head { flex: 0 0 auto; display: flex; justify-content: space-between;
-    align-items: baseline; margin-bottom: 3px; }
+  .core { position: relative; background: #0e1216; border: 1px solid #1b2128;
+    border-radius: 5px; padding: 3px 5px; display: flex; flex-direction: column;
+    min-height: 0; transition: background 600ms linear; }
+  /* Label floats centred over the graph instead of taking a header row, so the
+     graph itself stretches to fill the whole cell. */
+  .core-head { position: absolute; inset: 0; z-index: 1; display: flex; gap: 6px;
+    align-items: center; justify-content: center; pointer-events: none; }
   .core-head .core-name { font-size: 10px; letter-spacing: .04em;
-    text-transform: uppercase; color: #ffffff; }
-  .core-head .core-val { font-size: 11px; color: #b8eec5; }
+    text-transform: uppercase; color: #ffffff;
+    text-shadow: 0 1px 2px #000, 0 0 3px #000; }
+  .core-head .core-val { font-size: 11px; color: #b8eec5;
+    text-shadow: 0 1px 2px #000, 0 0 3px #000; }
   svg.core-svg { flex: 1 1 auto; min-height: 0; height: auto; }
   footer { flex: 0 0 auto; text-align: center; padding: 7px 18px;
     font-size: 11px; color: #6c7886; border-top: 1px solid #20262d; }
@@ -701,7 +706,10 @@ STATS_HTML = r"""<!doctype html>
 <script>
 (() => {
   const FETCH_TIMEOUT_MS = 2000;
-  const BASE_PAD_L = 44, BASE_PAD_R = 8, BASE_PAD_T = 8, BASE_PAD_B = 18;
+  // Equal left/right insets — the plot spans the full panel width, symmetric about
+  // its centre. Y-axis value labels are drawn *inside* the plot at the left edge
+  // (see render()), so they no longer need a wide left gutter.
+  const BASE_PAD_L = 8, BASE_PAD_R = 8, BASE_PAD_T = 8, BASE_PAD_B = 26;
 
   // Unified option set in seconds — union of former poll-seconds and window-minutes converted to seconds,
   // sorted shortest→longest. Both dropdowns use this same array with the same labels.
@@ -1073,10 +1081,7 @@ STATS_HTML = r"""<!doctype html>
   }
 
   function fmtY(v) {
-    const a = Math.abs(v);
-    if (a >= 100) return v.toFixed(0);
-    if (a >= 10) return v.toFixed(1);
-    return v.toFixed(2);
+    return String(Math.round(v));  // whole numbers only — no decimal places
   }
 
   // Pretty-print an age in seconds for the x-axis: under a minute stays in
@@ -1151,7 +1156,7 @@ STATS_HTML = r"""<!doctype html>
     opts = opts || {};
     const compact = !!opts.compact;     // small-multiple mode: no peak labels / x-axis
     const showYAxis = !!opts.yAxis;     // draw a minimal y-axis even when compact
-    const PAD_L = compact ? (showYAxis ? 26 : 6) : BASE_PAD_L;
+    const PAD_L = compact ? 6 : BASE_PAD_L;
     const PAD_R = compact ? 6 : BASE_PAD_R;
     const PAD_T = compact ? 4 : BASE_PAD_T;
     const PAD_B = compact ? 4 : BASE_PAD_B;
@@ -1196,9 +1201,9 @@ STATS_HTML = r"""<!doctype html>
     // y-axis grid. Full version on big panels; a sparse one on core graphs when
     // opts.yAxis is set (compact x-axis stays off — the window is shown above).
     if (!compact || showYAxis) {
-      // Core graphs use even quarter ticks (0/25/50/75/100 on the fixed scale);
-      // full panels aim for one nice-rounded gridline per ~34px.
-      const step = compact
+      // Fixed-scale panels use even quarter ticks (0/25/50/75/100); auto-scaled
+      // panels aim for one nice-rounded gridline per ~34px.
+      const step = (compact || opts.fixedMax != null)
         ? range / 4
         : niceStep(range / Math.max(2, Math.min(6, Math.round(PLOT_H / 34))));
       const tickStart = Math.ceil(yMin / step) * step;
@@ -1207,11 +1212,14 @@ STATS_HTML = r"""<!doctype html>
         svg.appendChild(svgEl('line', {
           x1: PAD_L, x2: W - PAD_R, y1: y, y2: y, class: 'grid',
         }));
+        // The compact core graphs show gridlines only — no numeric markers.
+        if (compact) continue;
+        // Labels sit just inside the plot's left edge (overlaid on the chart) so
+        // the plot itself can run edge-to-edge with symmetric margins.
         const lbl = svgEl('text', {
-          x: PAD_L - 4, y: y + 3, 'text-anchor': 'end',
-          class: compact ? 'axis axis-mini' : 'axis',
+          x: PAD_L + 3, y: y + 3, 'text-anchor': 'start', class: 'axis',
         });
-        lbl.textContent = compact ? String(Math.round(t)) : (fmtY(t) + ser.unit);
+        lbl.textContent = fmtY(t) + ser.unit;
         svg.appendChild(lbl);
       }
     }
@@ -1248,10 +1256,13 @@ STATS_HTML = r"""<!doctype html>
     // stays fixed to actual time regardless of poll interval.
     const pxPerSec = PLOT_W / windowSec;  // pixels per second
     const tsBase = timestamps.length - n; // timestamps[tsBase+i] is the clock for data[i]
+    // Anchor the right edge to the newest sample's timestamp (not wall-clock now) so
+    // the latest point lands exactly on the right inner edge with no trailing gap.
+    const refMs = timestamps.length ? timestamps[timestamps.length - 1] : nowMs;
     const xAt = i => {
       const tsIdx = tsBase + i;
       const ageSec = (tsIdx >= 0 && tsIdx < timestamps.length)
-        ? (nowMs - timestamps[tsIdx]) / 1000
+        ? (refMs - timestamps[tsIdx]) / 1000
         : (n - 1 - i) * pollSec;  // fallback before timestamps populate
       return PAD_L + PLOT_W - ageSec * pxPerSec;
     };
@@ -1281,8 +1292,17 @@ STATS_HTML = r"""<!doctype html>
     grad.appendChild(svgEl('stop', { offset: '1',   'stop-color': ser.from, 'stop-opacity': '0.32' }));
     const defs = svgEl('defs', {});
     defs.appendChild(grad);
+    // Clip the line + fill to the plot rectangle so segments never spill past the
+    // edges (the leftmost point of a just-trimmed series, or sub-pixel overshoot).
+    const clipId = 'plot-clip-' + svgId;
+    const clip = svgEl('clipPath', { id: clipId });
+    clip.appendChild(svgEl('rect', { x: PAD_L, y: PAD_T, width: PLOT_W, height: PLOT_H }));
+    defs.appendChild(clip);
     svg.appendChild(defs);
     const fillRef = 'url(#' + gradId + ')';
+    // Everything plotted (fill, line, single-point dots) goes in this clipped group.
+    const plotG = svgEl('g', { 'clip-path': 'url(#' + clipId + ')' });
+    svg.appendChild(plotG);
 
     // 1. Draw gap bands for runs of null values.
     let i = 0;
@@ -1330,12 +1350,12 @@ STATS_HTML = r"""<!doctype html>
           area += x.toFixed(2) + ' ' + y.toFixed(2) + ' ';
         }
         area += 'L' + xAt(segEnd).toFixed(2) + ' ' + baseY.toFixed(2) + ' Z';
-        svg.appendChild(svgEl('path', { d: area, fill: fillRef }));
-        svg.appendChild(svgEl('path', { d: d, class: 'line line-' + ser.color }));
+        plotG.appendChild(svgEl('path', { d: area, fill: fillRef }));
+        plotG.appendChild(svgEl('path', { d: d, class: 'line line-' + ser.color }));
       } else if (segEnd === segStart) {
         // single non-null point sandwiched between gaps — show as a dot
         const dotFill = { cpu: '#6ddc8a', mem: '#6db5dc', disk: '#dcb86d' }[ser.color];
-        svg.appendChild(svgEl('circle', {
+        plotG.appendChild(svgEl('circle', {
           cx: xAt(segStart), cy: yAt(data[segStart]), r: 1.6, fill: dotFill,
         }));
       }
