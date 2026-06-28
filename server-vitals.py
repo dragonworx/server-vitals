@@ -7,6 +7,7 @@ Exposes:
 """
 import json
 import os
+import socket
 import sys
 import threading
 import time
@@ -15,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 
 LISTEN = ("127.0.0.1", 9999)
+HOSTNAME = "www.fresneldigital.com"  # shown in browser tab; set "" to use system FQDN
 SAMPLE_INTERVAL = 0.25  # seconds between background CPU samples
 REQUEST_TIMEOUT = 5     # seconds before an idle/slow client connection is dropped
 
@@ -400,12 +402,29 @@ def fmt_size(value, unit="MB"):
     return "{:,.{}f} {}".format(v, dp, units[i])
 
 
+_cached_server_ip = None
+
+def server_ip():
+    global _cached_server_ip
+    if _cached_server_ip is None:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            _cached_server_ip = s.getsockname()[0]
+            s.close()
+        except Exception:
+            _cached_server_ip = ""
+    return _cached_server_ip
+
+
 def stats_payload():
     cpu, cores = _sampler.snapshot()
     mem = memory_stats()
     disk = disk_usage("/")
     return {
         "timestamp": time.time(),
+        "server_ip": server_ip(),
+        "hostname": HOSTNAME if HOSTNAME else socket.getfqdn(),
         "cpu_percent": cpu,
         "cpu_count": cpu_count(),
         "cpu_cores": cores,
@@ -498,9 +517,12 @@ STATS_HTML = r"""<!doctype html>
      Oldest sample at the left, newest at the leading edge (same direction as the
      graphs). Failed polls render as faint red gaps. Painted to a <canvas> that
      fills the strip (redrawn by renderHeat on every poll/resize). */
-  #statusbar { flex: 0 0 auto; height: 30px;
-    background: #0e1216; border-bottom: 1px solid #2b323a; }
+  #statusbar { flex: 0 0 auto; height: 40px;
+    background: #0e1216; border-bottom: none; }
   #statusbar #heatmap { display: block; width: 100%; height: 100%; }
+  #latencybar { flex: 0 0 auto; height: 40px;
+    background: #0e1216; border-bottom: 1px solid #2b323a; }
+  #latencybar #latencymap { display: block; width: 100%; height: 100%; }
   header .controls { margin-left: auto; display: flex; gap: 12px; align-items: center; }
   header .controls .ctl { display: inline-flex; align-items: center; gap: 5px;
     font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: #9ba6b2; }
@@ -508,13 +530,29 @@ STATS_HTML = r"""<!doctype html>
     border: 1px solid #20262d; border-radius: 4px; padding: 3px 6px;
     font-family: inherit; font-size: 11px; cursor: pointer; line-height: 1; }
   header .controls select:hover { border-color: #2a323b; }
-  header button.ctl-btn { background: #11151a; color: #d8dde3;
-    border: 1px solid #20262d; border-radius: 4px; padding: 2px 7px;
-    font-family: inherit; font-size: 12px; line-height: 1; cursor: pointer;
-    display: inline-flex; align-items: center; }
-  header button.ctl-btn:hover { border-color: #2a323b; }
-  /* Paused: button glows green and the title strobe halts to signal "frozen". */
-  header button.ctl-btn.paused { color: #6ddc8a; border-color: #2f6b41; }
+  /* Icon-only button: CSS draws pause bars / play triangle via ::before and ::after. */
+  header button.ctl-btn { background: #0e1216;
+    border: 1px solid #3a4553; border-radius: 4px; padding: 6px 10px;
+    cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+    transition: border-color 100ms, background 100ms; }
+  header button.ctl-btn:hover { border-color: #59697c; background: #141c26; }
+  /* Pause bars (two vertical rects the colour of the border). */
+  header button.ctl-btn::before,
+  header button.ctl-btn::after { content: ''; display: block;
+    width: 2px; height: 11px; background: #3a4553;
+    transition: background 100ms; }
+  header button.ctl-btn::before { margin-right: 4px; }
+  header button.ctl-btn:hover::before,
+  header button.ctl-btn:hover::after { background: #59697c; }
+  /* Paused state: replace bars with a single filled green triangle. */
+  header button.ctl-btn.paused { border-color: #3a7a4a; background: #0b1810; }
+  header button.ctl-btn.paused:hover { border-color: #4a9a5a; background: #0f2215; }
+  header button.ctl-btn.paused::before {
+    width: 0; height: 0; background: transparent; margin-right: 0;
+    border-top: 6px solid transparent; border-bottom: 6px solid transparent;
+    border-left: 10px solid #6ddc8a; transition: border-color 100ms; }
+  header button.ctl-btn.paused:hover::before { border-left-color: #8dec9a; }
+  header button.ctl-btn.paused::after { display: none; }
   body.paused header h1 { animation-play-state: paused; }
   main { flex: 1 1 auto; min-height: 0; padding: 12px 18px;
     display: grid; grid-template-rows: repeat(4, 1fr); gap: 12px; }
@@ -604,33 +642,20 @@ STATS_HTML = r"""<!doctype html>
 </head>
 <body>
 <header>
-  <h1>Server Vitals</h1>
+  <h1 id="title-ip">—</h1>
   <div class="controls">
     <span class="ctl">poll
-      <select id="poll-sel">
-        <option value="0.25">0.25s</option>
-        <option value="0.5">0.5s</option>
-        <option value="1">1s</option>
-        <option value="3">3s</option>
-        <option value="5">5s</option>
-        <option value="10">10s</option>
-      </select>
+      <select id="poll-sel"></select>
     </span>
     <span class="ctl">window
-      <select id="window-sel">
-        <option value="1">1m</option>
-        <option value="3">3m</option>
-        <option value="5">5m</option>
-        <option value="10">10m</option>
-        <option value="30">30m</option>
-        <option value="60">60m</option>
-      </select>
+      <select id="window-sel"></select>
     </span>
     <button id="pause-btn" class="ctl-btn" type="button"
-      title="Pause polling" aria-label="Pause polling" aria-pressed="false">⏸</button>
+      title="Pause polling" aria-label="Pause polling" aria-pressed="false"></button>
   </div>
 </header>
 <div id="statusbar"><canvas id="heatmap"></canvas></div>
+<div id="latencybar"><canvas id="latencymap"></canvas></div>
 <main>
   <section class="panel" id="cores-panel">
     <div class="panel-head">
@@ -667,8 +692,7 @@ STATS_HTML = r"""<!doctype html>
   const FETCH_TIMEOUT_MS = 2000;
   const BASE_PAD_L = 44, BASE_PAD_R = 8, BASE_PAD_T = 8, BASE_PAD_B = 18;
 
-  const POLL_OPTIONS = [0.25, 0.5, 1, 3, 5, 10];   // seconds
-  const WINDOW_OPTIONS = [1, 3, 5, 10, 30, 60];    // minutes
+  const OPTIONS = [0.25, 0.5, 1, 1.5, 3, 5, 10, 30, 60];  // shared values: seconds for poll, minutes for window
   const POLL_KEY = 'stats:poll:sec';
   const WINDOW_KEY = 'stats:window:min';
 
@@ -683,8 +707,8 @@ STATS_HTML = r"""<!doctype html>
     try { localStorage.setItem(key, String(value)); } catch (e) {}
   }
 
-  let pollSec = loadChoice(POLL_KEY, POLL_OPTIONS, 1);
-  let windowMin = loadChoice(WINDOW_KEY, WINDOW_OPTIONS, 5);
+  let pollSec = loadChoice(POLL_KEY, OPTIONS, 1);
+  let windowMin = loadChoice(WINDOW_KEY, OPTIONS, 5);
   let pollMs = pollSec * 1000;
   // Points kept = window seconds / poll seconds.
   let MAX_POINTS = Math.max(2, Math.round(windowMin * 60 / pollSec));
@@ -768,11 +792,49 @@ STATS_HTML = r"""<!doctype html>
     return 'hsl(' + hue.toFixed(0) + ',' + sat.toFixed(0) + '%,' + light + '%)';
   }
 
+  function latencyColor(ms) {
+    if (latencyMin === Infinity || latencyMax <= latencyMin) return 'hsl(180,70%,45%)';
+    const t = Math.min(1, Math.max(0, (ms - latencyMin) / (latencyMax - latencyMin)));
+    const hue = 180 * (1 - t);
+    const sat = 68 + 20 * t;
+    return 'hsl(' + hue.toFixed(0) + ',' + sat.toFixed(0) + '%,45%)';
+  }
+
   // Heat-map strip: one vertical block per poll, oldest at left, painted to the
   // #heatmap canvas. heatData holds the 0..1 score per slot (null = failed poll,
   // drawn as a faint red gap). Columns are sized to MAX_POINTS so the strip and
   // the graphs share the same time axis; redrawn on every poll and on resize.
   const heatData = [];
+  const latencyData = [];
+  let latencyMin = Infinity;
+  let latencyMax = -Infinity;
+  let cpuMin = Infinity;
+  let cpuMax = -Infinity;
+  // Wall-clock timestamp (ms) for each tick, kept parallel to series/heatData.
+  // Timestamp-based x-positioning keeps the horizontal scale fixed to real time
+  // so changing the poll interval never stretches or compresses the graphs.
+  const timestamps = [];
+
+  // Eased display window — animates smoothly between windowMin values on zoom.
+  let displayWindowMin = windowMin;
+  let _easeRAF = null, _easeFrom = windowMin, _easeTarget = windowMin, _easeT0 = 0;
+  const EASE_MS = 350;
+  function startWindowEase(to) {
+    _easeFrom = displayWindowMin;
+    _easeTarget = to;
+    _easeT0 = performance.now();
+    if (_easeRAF) cancelAnimationFrame(_easeRAF);
+    function step(now) {
+      const t = Math.min(1, (now - _easeT0) / EASE_MS);
+      const e = 1 - Math.pow(1 - t, 3);  // cubic ease-out
+      displayWindowMin = _easeFrom + (_easeTarget - _easeFrom) * e;
+      renderAll();
+      if (t < 1) _easeRAF = requestAnimationFrame(step);
+      else { displayWindowMin = _easeTarget; _easeRAF = null; renderAll(); }
+    }
+    _easeRAF = requestAnimationFrame(step);
+  }
+
   function pushHeat(v) {
     heatData.push(v);
     if (heatData.length > MAX_POINTS) heatData.shift();
@@ -788,18 +850,79 @@ STATS_HTML = r"""<!doctype html>
     const ctx = cv.getContext('2d');
     ctx.fillStyle = '#0e1216';
     ctx.fillRect(0, 0, cv.width, cv.height);
-    const colW = cv.width / MAX_POINTS;
-    // Right-anchor like the graphs: newest block at the right edge, older to the
-    // left, empty slots on the left until the window fills (matches xOffset in
-    // render() — same direction and speed as the line charts).
-    const off = MAX_POINTS - heatData.length;
+    // Timestamp-based: place each block at its actual time position so the strip
+    // stays in sync with the line graphs when poll interval or window changes.
+    const nowMs = Date.now();
+    const windowMs = displayWindowMin * 60 * 1000;
+    const pxPerMs = cv.width / windowMs;
+    const halfSlotMs = pollSec * 500;  // half the expected slot width in ms
+    const tsBase = timestamps.length - heatData.length;
     for (let i = 0; i < heatData.length; i++) {
+      const tsIdx = tsBase + i;
+      const ts = (tsIdx >= 0 && tsIdx < timestamps.length) ? timestamps[tsIdx]
+               : nowMs - (heatData.length - 1 - i + 0.5) * pollSec * 1000;
+      const ageMidMs = nowMs - ts;
+      if (ageMidMs > windowMs + halfSlotMs) continue;
+      const x0 = Math.max(0, Math.floor(cv.width - (ageMidMs + halfSlotMs) * pxPerMs));
+      const x1 = Math.min(cv.width, Math.ceil(cv.width - (ageMidMs - halfSlotMs) * pxPerMs));
+      if (x1 <= x0) continue;
       const v = heatData[i];
-      const x = Math.floor((off + i) * colW);
-      const x2 = Math.ceil((off + i + 1) * colW);
       ctx.fillStyle = (v == null || isNaN(v)) ? 'rgba(255,77,77,.20)' : heatHsl(v, 45);
-      ctx.fillRect(x, 0, x2 - x, cv.height);
+      ctx.fillRect(x0, 0, x1 - x0, cv.height);
     }
+    ctx.font = Math.round(11 * dpr) + 'px ui-monospace,monospace';
+    ctx.fillStyle = 'rgba(255,255,255,1)';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.shadowColor = 'black';
+    ctx.shadowOffsetX = 1 * dpr;
+    ctx.shadowOffsetY = 1 * dpr;
+    ctx.shadowBlur = 0;
+    const perfRange = cpuMin === Infinity ? '' : ': ' + cpuMin.toFixed(0) + '% – ' + cpuMax.toFixed(0) + '%';
+    ctx.fillText('PERFORMANCE' + perfRange, Math.round(4 * dpr), cv.height / 2);
+    ctx.shadowColor = 'transparent';
+  }
+
+  function renderLatency() {
+    const cv = el('latencymap');
+    if (!cv) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = cv.clientWidth, h = cv.clientHeight;
+    if (!w || !h) return;
+    cv.width = Math.round(w * dpr);
+    cv.height = Math.round(h * dpr);
+    const ctx = cv.getContext('2d');
+    ctx.fillStyle = '#0e1216';
+    ctx.fillRect(0, 0, cv.width, cv.height);
+    const nowMs = Date.now();
+    const windowMs = displayWindowMin * 60 * 1000;
+    const pxPerMs = cv.width / windowMs;
+    const halfSlotMs = pollSec * 500;
+    const tsBase = timestamps.length - latencyData.length;
+    for (let i = 0; i < latencyData.length; i++) {
+      const tsIdx = tsBase + i;
+      const ts = (tsIdx >= 0 && tsIdx < timestamps.length) ? timestamps[tsIdx]
+               : nowMs - (latencyData.length - 1 - i + 0.5) * pollSec * 1000;
+      const ageMidMs = nowMs - ts;
+      if (ageMidMs > windowMs + halfSlotMs) continue;
+      const x0 = Math.max(0, Math.floor(cv.width - (ageMidMs + halfSlotMs) * pxPerMs));
+      const x1 = Math.min(cv.width, Math.ceil(cv.width - (ageMidMs - halfSlotMs) * pxPerMs));
+      if (x1 <= x0) continue;
+      const v = latencyData[i];
+      ctx.fillStyle = (v == null || isNaN(v)) ? 'rgba(255,77,77,.20)' : latencyColor(v);
+      ctx.fillRect(x0, 0, x1 - x0, cv.height);
+    }
+    ctx.font = Math.round(11 * dpr) + 'px ui-monospace,monospace';
+    ctx.fillStyle = 'rgba(255,255,255,1)';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.shadowColor = 'black';
+    ctx.shadowOffsetX = 1 * dpr;
+    ctx.shadowOffsetY = 1 * dpr;
+    ctx.shadowBlur = 0;
+    const latRange = latencyMin === Infinity ? '' : ': ' + latencyMin.toFixed(0) + 'ms – ' + latencyMax.toFixed(0) + 'ms';
+    ctx.fillText('LATENCY' + latRange, Math.round(4 * dpr), cv.height / 2);
+    ctx.shadowColor = 'transparent';
   }
 
   function ensureCores(count) {
@@ -1007,7 +1130,7 @@ STATS_HTML = r"""<!doctype html>
     // x-axis labels — the plot spans the full configured window. Five evenly
     // spaced markers, each showing relative age plus the absolute clock time
     // (the absolute part in a lighter shade), e.g. "-5m 2:32pm".
-    const windowSec = windowMin * 60;
+    const windowSec = displayWindowMin * 60;  // use animated value for smooth zoom
     const nowMs = Date.now();
     const TICKS = 5;
     const xLabels = compact ? [] : Array.from({ length: TICKS }, (_, i) => {
@@ -1032,10 +1155,19 @@ STATS_HTML = r"""<!doctype html>
 
     // line + fill, broken into segments around null runs.
     const n = data.length;
-    const xStep = PLOT_W / (MAX_POINTS - 1);
-    const xOffset = PAD_L + PLOT_W - (n - 1) * xStep;
+    // Timestamp-based x: each point placed at its real age so the horizontal scale
+    // stays fixed to actual time regardless of poll interval.
+    const pxPerSec = PLOT_W / windowSec;  // pixels per second (windowSec = displayWindowMin*60)
+    const tsBase = timestamps.length - n; // timestamps[tsBase+i] is the clock for data[i]
+    const xAt = i => {
+      const tsIdx = tsBase + i;
+      const ageSec = (tsIdx >= 0 && tsIdx < timestamps.length)
+        ? (nowMs - timestamps[tsIdx]) / 1000
+        : (n - 1 - i) * pollSec;  // fallback before timestamps populate
+      return PAD_L + PLOT_W - ageSec * pxPerSec;
+    };
+    const xStep = pollSec * pxPerSec;  // expected spacing between points, for gap bands
     const baseY = PAD_T + PLOT_H;
-    const xAt = i => xOffset + i * xStep;
     const yAt = v => PAD_T + (1 - (v - yMin) / range) * PLOT_H;
 
     // Vertical value-gradient for the filled area. The stops are anchored (in
@@ -1154,6 +1286,7 @@ STATS_HTML = r"""<!doctype html>
       render('core-svg-' + i, coreSeries[i], { compact: true, fixedMax: 100, yAxis: true });
     }
     renderHeat();
+    renderLatency();
   }
 
   let resizeTimer = null;
@@ -1168,10 +1301,16 @@ STATS_HTML = r"""<!doctype html>
       if (s.data.length > MAX_POINTS) s.data.splice(0, s.data.length - MAX_POINTS);
     }
     if (heatData.length > MAX_POINTS) heatData.splice(0, heatData.length - MAX_POINTS);
+    if (latencyData.length > MAX_POINTS) latencyData.splice(0, latencyData.length - MAX_POINTS);
+    if (timestamps.length > MAX_POINTS) timestamps.splice(0, timestamps.length - MAX_POINTS);
   }
 
   const pollSel = el('poll-sel');
   const windowSel = el('window-sel');
+  OPTIONS.forEach(v => {
+    pollSel.appendChild(Object.assign(document.createElement('option'), { value: v, textContent: v + 's' }));
+    windowSel.appendChild(Object.assign(document.createElement('option'), { value: v, textContent: v + 'm' }));
+  });
   pollSel.value = String(pollSec);
   windowSel.value = String(windowMin);
 
@@ -1193,7 +1332,7 @@ STATS_HTML = r"""<!doctype html>
     MAX_POINTS = Math.max(2, Math.round(windowMin * 60 / pollSec));
     persist(WINDOW_KEY, windowMin);
     trimAll();
-    renderAll();
+    startWindowEase(windowMin);  // animate the zoom transition
   });
 
   function push(name, v) {
@@ -1228,13 +1367,26 @@ STATS_HTML = r"""<!doctype html>
   async function tick() {
     let ok = false;
     let statusHeat = 1, statusHung = true;
+    let latencyMs = null;
+    const t0 = performance.now();
+
+    const [statsResult] = await Promise.allSettled([
+      fetchWithTimeout('/stats?format=json', FETCH_TIMEOUT_MS),
+      fetchWithTimeout('/ping', FETCH_TIMEOUT_MS).then(() => {
+        latencyMs = performance.now() - t0;
+      }).catch(() => {}),
+    ]);
+
     try {
-      const r = await fetchWithTimeout('/stats?format=json', FETCH_TIMEOUT_MS);
+      if (statsResult.status !== 'fulfilled') throw statsResult.reason || new Error('fetch failed');
+      const r = statsResult.value;
       if (!r.ok) throw new Error('http ' + r.status);
       const j = await r.json();
       push('cpu',  j.cpu_percent);
       push('mem',  j.memory_percent);
       push('disk', j.disk_percent);
+      if (j.cpu_percent < cpuMin) cpuMin = j.cpu_percent;
+      if (j.cpu_percent > cpuMax) cpuMax = j.cpu_percent;
 
       const cores = Array.isArray(j.cpu_cores) ? j.cpu_cores : [];
       if (cores.length) {
@@ -1246,6 +1398,12 @@ STATS_HTML = r"""<!doctype html>
         }
       }
 
+      if (j.server_ip) {
+        const h = el('title-ip');
+        if (h.textContent !== j.server_ip) h.textContent = j.server_ip;
+        const docTitle = j.hostname ? j.server_ip + ' (' + j.hostname + ')' : j.server_ip;
+        if (document.title !== docTitle) document.title = docTitle;
+      }
       el('cpu-now').textContent  = j.cpu_percent.toFixed(1) + '%';
       el('cpu-sub').textContent  = '';
       el('mem-now').textContent  = j.memory_percent.toFixed(1) + '%';
@@ -1259,8 +1417,6 @@ STATS_HTML = r"""<!doctype html>
         ? j.load_average['1min'] : null;
       const coreCount = (typeof j.cpu_count === 'number' && j.cpu_count > 0) ? j.cpu_count : 1;
       const loadPerCore = load1 == null ? 0 : load1 / coreCount;
-      // One score colours the title and the newest heat-map block. A responsive
-      // but wildly over-subscribed box (load ≥ 4×cores) still reads as "hung".
       statusHeat = loadScore(j.cpu_percent, j.memory_percent, loadPerCore);
       statusHung = loadPerCore >= 4;
 
@@ -1270,7 +1426,6 @@ STATS_HTML = r"""<!doctype html>
     } catch (e) {
       pushFailureSlot();
       consecutiveFailures++;
-      // AbortError shows up as DOMException with name 'AbortError'.
       lastError = (e && e.name === 'AbortError') ? 'timeout'
                 : (e && e.message) ? e.message
                 : String(e);
@@ -1279,14 +1434,22 @@ STATS_HTML = r"""<!doctype html>
       el('disk-now').textContent = '—';
     }
 
+    if (latencyMs != null) {
+      if (latencyMs < latencyMin) latencyMin = latencyMs;
+      if (latencyMs > latencyMax) latencyMax = latencyMs;
+    }
+    latencyData.push(latencyMs);
+    if (latencyData.length > MAX_POINTS) latencyData.shift();
+
     if (ok) {
       pushHeat(statusHeat);
       applyStatus(statusHeat, statusHung);
     } else {
-      // No response from the box → faint-gap block on the strip + flat-red title.
       pushHeat(null);
       applyStatus(1, true);
     }
+    timestamps.push(Date.now());
+    if (timestamps.length > MAX_POINTS) timestamps.shift();
     renderAll();
 
     scheduleNext();
@@ -1307,7 +1470,6 @@ STATS_HTML = r"""<!doctype html>
     clearTimeout(pollTimer);
     document.body.classList.toggle('paused', p);
     pauseBtn.classList.toggle('paused', p);
-    pauseBtn.textContent = p ? '▶' : '⏸';
     pauseBtn.title = p ? 'Resume polling' : 'Pause polling';
     pauseBtn.setAttribute('aria-label', pauseBtn.title);
     pauseBtn.setAttribute('aria-pressed', String(p));
@@ -1364,6 +1526,8 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json(stats_payload())
                 else:
                     self._send_html(STATS_HTML)
+            elif path == "/ping":
+                self._send(b'', "text/plain; charset=utf-8", 200)
             else:
                 self._send_json({"error": "not found"}, code=404)
         except (BrokenPipeError, ConnectionResetError):
