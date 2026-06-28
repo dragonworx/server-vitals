@@ -476,7 +476,7 @@ STATS_HTML = r"""<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Server Vitals</title>
 <style>
-  :root { color-scheme: dark; }
+  :root { color-scheme: dark; --strip-h: 24px; }
   html, body { margin: 0; padding: 0; height: 100%; background: #0b0d10; color: #d8dde3;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   /* Fill the viewport: fixed header, panels share the remaining height evenly. */
@@ -517,10 +517,10 @@ STATS_HTML = r"""<!doctype html>
      Oldest sample at the left, newest at the leading edge (same direction as the
      graphs). Failed polls render as faint red gaps. Painted to a <canvas> that
      fills the strip (redrawn by renderHeat on every poll/resize). */
-  #statusbar { flex: 0 0 auto; height: 40px;
+  #statusbar { flex: 0 0 auto; height: var(--strip-h);
     background: #0e1216; border-bottom: none; }
   #statusbar #heatmap { display: block; width: 100%; height: 100%; }
-  #latencybar { flex: 0 0 auto; height: 40px;
+  #latencybar { flex: 0 0 auto; height: var(--strip-h);
     background: #0e1216; border-bottom: 1px solid #2b323a; }
   #latencybar #latencymap { display: block; width: 100%; height: 100%; }
   header .controls { margin-left: auto; display: flex; gap: 12px; align-items: center; }
@@ -820,11 +820,10 @@ STATS_HTML = r"""<!doctype html>
   }
 
   function latencyColor(ms) {
-    if (latencyMin === Infinity || latencyMax <= latencyMin) return 'hsl(180,70%,45%)';
+    if (latencyMin === Infinity || latencyMax <= latencyMin) return 'hsl(120,65%,28%)';
     const t = Math.min(1, Math.max(0, (ms - latencyMin) / (latencyMax - latencyMin)));
-    const hue = 180 * (1 - t);
-    const sat = 68 + 20 * t;
-    return 'hsl(' + hue.toFixed(0) + ',' + sat.toFixed(0) + '%,45%)';
+    const hue = 120 * (1 - t);  // dark green (120) → dark red (0)
+    return 'hsl(' + hue.toFixed(0) + ',65%,28%)';
   }
 
   // Heat-map strip: one vertical block per poll, oldest at left, painted to the
@@ -835,8 +834,10 @@ STATS_HTML = r"""<!doctype html>
   const latencyData = [];
   let latencyMin = Infinity;
   let latencyMax = -Infinity;
+  let latencyLast = null;
   let cpuMin = Infinity;
   let cpuMax = -Infinity;
+  let cpuLast = null;
   // Wall-clock timestamp (ms) for each tick, kept parallel to series/heatData.
   // Timestamp-based x-positioning keeps the horizontal scale fixed to real time
   // so changing the poll interval never stretches or compresses the graphs.
@@ -866,6 +867,14 @@ STATS_HTML = r"""<!doctype html>
     heatData.push(v);
     if (heatData.length > MAX_POINTS) heatData.shift();
   }
+  function fillSegments(ctx, segments, x, y) {
+    for (const { text, color } of segments) {
+      ctx.fillStyle = color;
+      ctx.fillText(text, x, y);
+      x += ctx.measureText(text).width;
+    }
+  }
+
   function renderHeat() {
     const cv = el('heatmap');
     if (!cv) return;
@@ -897,7 +906,7 @@ STATS_HTML = r"""<!doctype html>
       ctx.fillStyle = (v == null || isNaN(v)) ? 'rgba(255,77,77,.20)' : heatHsl(v, 45);
       ctx.fillRect(x0, 0, x1 - x0, cv.height);
     }
-    ctx.font = Math.round(11 * dpr) + 'px ui-monospace,monospace';
+    ctx.font = 'bold ' + Math.round(13 * dpr) + 'px ui-monospace,monospace';
     ctx.fillStyle = 'rgba(255,255,255,1)';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
@@ -905,8 +914,21 @@ STATS_HTML = r"""<!doctype html>
     ctx.shadowOffsetX = 1 * dpr;
     ctx.shadowOffsetY = 1 * dpr;
     ctx.shadowBlur = 0;
-    const perfRange = cpuMin === Infinity ? '' : ': ' + cpuMin.toFixed(0) + '% – ' + cpuMax.toFixed(0) + '%';
-    ctx.fillText('PERFORMANCE' + perfRange, Math.round(4 * dpr), cv.height / 2);
+    const WHITE = 'rgba(255,255,255,1)';
+    const x0perf = Math.round(4 * dpr), y0perf = cv.height / 2;
+    if (cpuMin === Infinity) {
+      ctx.fillStyle = WHITE;
+      ctx.fillText('PERFORMANCE', x0perf, y0perf);
+    } else {
+      const segs = [
+        { text: 'PERFORMANCE: ', color: WHITE },
+        { text: cpuMin.toFixed(0) + '%',  color: GRAD_FROM },
+        { text: ' – ',                    color: WHITE },
+        { text: cpuMax.toFixed(0) + '%',  color: GRAD_TO },
+      ];
+      if (cpuLast != null) segs.push({ text: ' (' + cpuLast.toFixed(0) + '%)', color: WHITE });
+      fillSegments(ctx, segs, x0perf, y0perf);
+    }
     ctx.shadowColor = 'transparent';
   }
 
@@ -939,7 +961,7 @@ STATS_HTML = r"""<!doctype html>
       ctx.fillStyle = (v == null || isNaN(v)) ? 'rgba(255,77,77,.20)' : latencyColor(v);
       ctx.fillRect(x0, 0, x1 - x0, cv.height);
     }
-    ctx.font = Math.round(11 * dpr) + 'px ui-monospace,monospace';
+    ctx.font = 'bold ' + Math.round(13 * dpr) + 'px ui-monospace,monospace';
     ctx.fillStyle = 'rgba(255,255,255,1)';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
@@ -947,8 +969,23 @@ STATS_HTML = r"""<!doctype html>
     ctx.shadowOffsetX = 1 * dpr;
     ctx.shadowOffsetY = 1 * dpr;
     ctx.shadowBlur = 0;
-    const latRange = latencyMin === Infinity ? '' : ': ' + latencyMin.toFixed(0) + 'ms – ' + latencyMax.toFixed(0) + 'ms';
-    ctx.fillText('LATENCY' + latRange, Math.round(4 * dpr), cv.height / 2);
+    const WHITE2 = 'rgba(255,255,255,1)';
+    const LAT_FROM = 'hsl(120,65%,28%)';
+    const LAT_TO   = 'hsl(0,65%,28%)';
+    const x0lat = Math.round(4 * dpr), y0lat = cv.height / 2;
+    if (latencyMin === Infinity) {
+      ctx.fillStyle = WHITE2;
+      ctx.fillText('LATENCY', x0lat, y0lat);
+    } else {
+      const segs = [
+        { text: 'LATENCY: ',                        color: WHITE2 },
+        { text: latencyMin.toFixed(0) + 'ms',       color: LAT_FROM },
+        { text: ' – ',                              color: WHITE2 },
+        { text: latencyMax.toFixed(0) + 'ms',       color: LAT_TO },
+      ];
+      if (latencyLast != null) segs.push({ text: ' (' + latencyLast.toFixed(0) + 'ms)', color: WHITE2 });
+      fillSegments(ctx, segs, x0lat, y0lat);
+    }
     ctx.shadowColor = 'transparent';
   }
 
@@ -1419,6 +1456,7 @@ STATS_HTML = r"""<!doctype html>
       push('cpu',  j.cpu_percent);
       push('mem',  j.memory_percent);
       push('disk', j.disk_percent);
+      cpuLast = j.cpu_percent;
       if (j.cpu_percent < cpuMin) cpuMin = j.cpu_percent;
       if (j.cpu_percent > cpuMax) cpuMax = j.cpu_percent;
 
@@ -1468,6 +1506,7 @@ STATS_HTML = r"""<!doctype html>
     }
 
     if (latencyMs != null) {
+      latencyLast = latencyMs;
       if (latencyMs < latencyMin) latencyMin = latencyMs;
       if (latencyMs > latencyMax) latencyMax = latencyMs;
     }
