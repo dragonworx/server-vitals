@@ -12,10 +12,11 @@ import sys
 import threading
 import time
 import traceback
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 
-VERSION = "2.0.1"
+VERSION = "2.1.0"
 LISTEN = ("127.0.0.1", 9999)
 HOSTNAME = "www.fresneldigital.com"  # shown in browser tab; set "" to use system FQDN
 SAMPLE_INTERVAL = 0.25  # seconds between background CPU samples
@@ -406,6 +407,8 @@ def fmt_size(value, unit="MB"):
 _cached_server_ip = None
 
 def server_ip():
+    """This host's private / local-network address — the source IP the kernel
+    would use to reach the internet. Cached; never leaves the local network."""
     global _cached_server_ip
     if _cached_server_ip is None:
         try:
@@ -418,6 +421,45 @@ def server_ip():
     return _cached_server_ip
 
 
+# Public (internet-facing) IP. Unlike server_ip() this can't be read locally —
+# behind NAT the source address above is a private 10./192.168. address — so we
+# ask an external echo service. That's the one outbound HTTP call in the program,
+# so it runs on a background thread (never in a request path) and the result is
+# published under a lock. Empty string until the first successful fetch.
+_public_ip = ""
+_public_ip_lock = threading.Lock()
+
+def public_ip():
+    with _public_ip_lock:
+        return _public_ip
+
+def _fetch_public_ip():
+    """Try each echo service in turn; publish the first plain-IP answer. Returns
+    True once the public IP is known (this call or a previous one)."""
+    global _public_ip
+    for url in ("https://api.ipify.org", "https://checkip.amazonaws.com"):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "server-vitals"})
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                ip = resp.read(64).decode("ascii", "replace").strip()
+            # Guard against error pages / captive portals: accept only a bare IP.
+            if ip and all(c in "0123456789abcdefABCDEF.:" for c in ip):
+                with _public_ip_lock:
+                    _public_ip = ip
+                return True
+        except Exception:
+            continue
+    with _public_ip_lock:
+        return bool(_public_ip)
+
+def _public_ip_worker():
+    # Retry quickly until the first success (egress may lag boot), then refresh
+    # slowly — a host's public IP rarely changes, but this catches it if it does.
+    while True:
+        ok = _fetch_public_ip()
+        time.sleep(900 if ok else 30)
+
+
 def stats_payload():
     cpu, cores = _sampler.snapshot()
     mem = memory_stats()
@@ -425,6 +467,7 @@ def stats_payload():
     return {
         "timestamp": time.time(),
         "server_ip": server_ip(),
+        "public_ip": public_ip(),
         "hostname": HOSTNAME if HOSTNAME else socket.getfqdn(),
         "cpu_percent": cpu,
         "cpu_count": cpu_count(),
@@ -487,7 +530,10 @@ STATS_HTML = r"""<!doctype html>
   header h1 { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: .14em;
     font-family: "Avenir Next", "Segoe UI", system-ui, -apple-system,
       "Helvetica Neue", Arial, sans-serif;
-    white-space: nowrap;
+    /* Clip a long host label to an ellipsis instead of letting it widen the flex
+       row — otherwise a long hostname pushes the controls onto a second line
+       (they wrap on narrow screens). min-width:0 lets this flex item shrink. */
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
     /* A wave sweeps through the title. Its base/crest colours are the current
        machine-status hue (--title-base / --title-crest, set from JS on the shared
        green→orange→red ramp; flat red when hung). One cycle takes --pulse-duration
@@ -528,7 +574,8 @@ STATS_HTML = r"""<!doctype html>
   #latencybar { flex: 0 0 auto; height: var(--strip-h);
     background: #0e1216; border-bottom: none; }
   #latencybar #latencymap { display: block; width: 100%; height: 100%; }
-  header .controls { margin-left: auto; display: flex; gap: 12px; align-items: center; }
+  header .controls { margin-left: auto; display: flex; gap: 12px; align-items: center;
+    flex: none; }  /* never shrink: the title clips before the controls give ground */
   header .controls .ctl { display: inline-flex; align-items: center; gap: 5px;
     font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: #9ba6b2; }
   header .controls select { background: #11151a; color: #d8dde3;
@@ -639,10 +686,11 @@ STATS_HTML = r"""<!doctype html>
   footer a:hover { color: #d8dde3; text-decoration: underline; }
   footer a.ver { color: #4b545e; margin-right: 8px; }
   footer a.ver:hover { color: #6c7886; text-decoration: underline; }
-  /* Portrait phones (iPhone ≈ 390px): let the header controls wrap below the
-     title instead of overflowing, and tighten paddings/grids to fit the column. */
+  /* Portrait phones (iPhone ≈ 390px): keep the header on one row and let the
+     title ellipsize beside the controls (rather than wrapping them below), and
+     tighten paddings/grids to fit the column. */
   @media (max-width: 480px) {
-    header { padding: 10px 12px; gap: 8px 12px; flex-wrap: wrap; }
+    header { padding: 10px 12px; gap: 8px 12px; flex-wrap: nowrap; }
     header h1 { font-size: 16px; }
     header .controls { gap: 8px; }
     header .controls .ctl { font-size: 10px; gap: 4px; }
@@ -774,24 +822,47 @@ STATS_HTML = r"""<!doctype html>
     root.setProperty('--title-crest', hung ? '#ff8f8f' : heatHsl(heat, 80));
   }
 
-  // Host label — when accessed via localhost/127.0.0.1 the browser is on the same
-  // machine, so default to showing "localhost" (or "127.0.0.1") rather than the
-  // outbound IP the server probes. Clicking the label toggles between the two.
-  const IS_LOCAL = ['localhost', '127.0.0.1'].includes(window.location.hostname);
-  let _serverIp = '';
-  let _serverHostname = '';
-  let _showLocal = true;  // only relevant when IS_LOCAL
+  // Host label (top-left) — one line that identifies this server three ways.
+  // Clicking it cycles Public IP → Private IP → Hostname; each mode shows a
+  // hover tooltip explaining what the value is. The chosen mode is remembered
+  // in localStorage so a reload keeps the reader's preferred view.
+  let _serverIp = '';        // private / local-network address
+  let _serverHostname = '';  // fully-qualified domain name
+  let _publicIp = '';        // internet-facing address
+
+  const IP_MODES = ['public', 'private', 'hostname'];
+  const IP_META = {
+    public:   { label: 'Public IP',  get: () => _publicIp,
+                desc: 'Public IP — this server’s internet-facing address.' },
+    private:  { label: 'Private IP', get: () => _serverIp,
+                desc: 'Private IP — this server’s address on its local network.' },
+    hostname: { label: 'Hostname',   get: () => _serverHostname,
+                desc: 'Hostname — this server’s fully-qualified domain name.' },
+  };
+  let _ipMode = 'public';
+  try {
+    const saved = localStorage.getItem('title-ip-mode');
+    if (IP_MODES.includes(saved)) _ipMode = saved;
+  } catch (e) {}
+
   function applyTitleIp() {
-    if (!_serverIp) return;
     const h = document.getElementById('title-ip');
-    const display = IS_LOCAL && _showLocal ? window.location.hostname : _serverIp;
+    const meta = IP_META[_ipMode];
+    const val = meta.get();
+    const display = val || '—';  // em dash while a value is still loading
     if (h.textContent !== display) h.textContent = display;
-    if (IS_LOCAL) {
-      h.title = _showLocal ? 'click to show server IP (' + _serverIp + ')'
-                           : 'click to show local hostname (' + window.location.hostname + ')';
-    }
-    const docTitle = _serverHostname ? _serverIp + ' (' + _serverHostname + ')' : _serverIp;
-    if (document.title !== docTitle) document.title = docTitle;
+    const next = IP_META[IP_MODES[(IP_MODES.indexOf(_ipMode) + 1) % IP_MODES.length]];
+    h.title = meta.desc + (val ? '' : ' (unavailable)') + '\nClick to show ' + next.label + '.';
+    // Browser tab: internet-facing IP if known, else private, with the hostname.
+    const ip = _publicIp || _serverIp || '';
+    const docTitle = _serverHostname ? (ip ? ip + ' (' + _serverHostname + ')' : _serverHostname) : ip;
+    if (docTitle && document.title !== docTitle) document.title = docTitle;
+  }
+
+  function cycleIpMode() {
+    _ipMode = IP_MODES[(IP_MODES.indexOf(_ipMode) + 1) % IP_MODES.length];
+    try { localStorage.setItem('title-ip-mode', _ipMode); } catch (e) {}
+    applyTitleIp();
   }
 
   // Filled-area gradient endpoints, shared by every chart: `from` paints the
@@ -1414,10 +1485,11 @@ STATS_HTML = r"""<!doctype html>
     if (timestamps.length > MAX_POINTS) timestamps.splice(0, timestamps.length - MAX_POINTS);
   }
 
-  if (IS_LOCAL) {
+  {
     const h = el('title-ip');
     h.style.cursor = 'pointer';
-    h.addEventListener('click', () => { _showLocal = !_showLocal; applyTitleIp(); });
+    h.addEventListener('click', cycleIpMode);
+    applyTitleIp();  // render the saved mode's tooltip before the first poll lands
   }
 
   const pollSel = el('poll-sel');
@@ -1514,11 +1586,10 @@ STATS_HTML = r"""<!doctype html>
         }
       }
 
-      if (j.server_ip) {
-        _serverIp = j.server_ip;
-        _serverHostname = j.hostname || '';
-        applyTitleIp();
-      }
+      _serverIp = j.server_ip || '';
+      _serverHostname = j.hostname || '';
+      _publicIp = j.public_ip || '';
+      applyTitleIp();
       el('cpu-now').textContent  = Math.round(j.cpu_percent) + '%';
       el('cpu-sub').textContent  = '';
       el('mem-now').textContent  = Math.round(j.memory_percent) + '%';
@@ -1695,6 +1766,7 @@ def _startup_banner():
 def main():
     _startup_banner()
     _sampler.start()
+    threading.Thread(target=_public_ip_worker, name="public-ip", daemon=True).start()
     server = ThreadingHTTPServer(LISTEN, Handler)
     server.daemon_threads = True
     try:
