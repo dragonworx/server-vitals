@@ -10,8 +10,11 @@
   },
   "scripts": {
     "prep": "./doc/png-to-webp.sh",
-    "publish:patch": "npm version patch --no-git-tag-version && V=$(node -p \"require('./package.json').version\") && sed -i \"s/^VERSION = .*/VERSION = \\\"$V\\\"/\" server-vitals.py && git add -A && git commit -m \"v$V\" && git tag \"v$V\" && git push && git push --tags",
-    "publish:minor": "npm version minor --no-git-tag-version && V=$(node -p \"require('./package.json').version\") && sed -i \"s/^VERSION = .*/VERSION = \\\"$V\\\"/\" server-vitals.py && git add -A && git commit -m \"v$V\" && git tag \"v$V\" && git push && git push --tags",
-    "publish:major": "npm version major --no-git-tag-version && V=$(node -p \"require('./package.json').version\") && sed -i \"s/^VERSION = .*/VERSION = \\\"$V\\\"/\" server-vitals.py && git add -A && git commit -m \"v$V\" && git tag \"v$V\" && git push && git push --tags"
+    "check": "python3 -m py_compile server-vitals.py && echo \"ok: server-vitals.py compiles\"",
+    "deploy": "./install.sh",
+    "_release": "V=$(node -p \"require('./package.json').version\") && sed -i \"s/^VERSION = .*/VERSION = \\\"$V\\\"/\" server-vitals.py && git add -A && git commit -m \"v$V\" && git tag \"v$V\" && git push && git push --tags && npm run deploy",
+    "publish:patch": "bun check && npm version patch --no-git-tag-version && npm run _release",
+    "publish:minor": "bun check && npm version minor --no-git-tag-version && npm run _release",
+    "publish:major": "bun check && npm version major --no-git-tag-version && npm run _release"
   }
 }
