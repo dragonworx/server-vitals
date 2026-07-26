@@ -1,6 +1,6 @@
 {
   "name": "server-vitals",
-  "version": "2.1.1",
+  "version": "2.2.0",
   "description": "Single-file, zero-dependency host-monitoring agent (Python stdlib only). This package.json exists only to expose convenience scripts.",
   "private": true,
   "license": "MIT",
