@@ -16,7 +16,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 
-VERSION = "2.1.1"
+VERSION = "2.2.0"
 LISTEN = ("127.0.0.1", 9999)
 HOSTNAME = "www.fresneldigital.com"  # shown in browser tab; set "" to use system FQDN
 SAMPLE_INTERVAL = 0.25  # seconds between background CPU samples
@@ -1295,11 +1295,27 @@ STATS_HTML = r"""<!doctype html>
       }
     }
 
-    // x-axis labels — the plot spans the full configured window. Five evenly
+    // line + fill, broken into segments around null runs.
+    const n = data.length;
+    const nowMs = Date.now();
+    const tsBase = timestamps.length - n; // timestamps[tsBase+i] is the clock for data[i]
+    // Anchor the right edge to the newest sample's timestamp (not wall-clock now) so
+    // the latest point lands exactly on the right inner edge with no trailing gap.
+    const refMs = timestamps.length ? timestamps[timestamps.length - 1] : nowMs;
+    // Until enough history has accumulated to span the whole configured window (e.g.
+    // just after a page load, or right after widening the window), scale to however
+    // much data actually exists instead of pinning to the full window — otherwise the
+    // series only occupies the newest fraction of the plot and the rest reads as a
+    // rendering bug rather than "still collecting samples". Floored at one poll
+    // interval so two very-fresh points don't blow pxPerSec up toward infinity.
+    const oldestAgeSec = (tsBase >= 0 && timestamps.length)
+      ? (refMs - timestamps[tsBase]) / 1000
+      : (n - 1) * pollSec;
+    const windowSec = Math.min(displayWindowSec, Math.max(oldestAgeSec, pollSec));
+
+    // x-axis labels — the plot spans `windowSec` (see above). Five evenly
     // spaced markers, each showing relative age plus the absolute clock time
     // (the absolute part in a lighter shade), e.g. "-5m 2:32pm".
-    const windowSec = displayWindowSec;  // use animated value for smooth zoom
-    const nowMs = Date.now();
     const TICKS = 5;
     const xLabels = compact ? [] : Array.from({ length: TICKS }, (_, i) => {
       const frac = i / (TICKS - 1);           // 0 (oldest) .. 1 (now)
@@ -1321,15 +1337,9 @@ STATS_HTML = r"""<!doctype html>
       svg.appendChild(t);
     }
 
-    // line + fill, broken into segments around null runs.
-    const n = data.length;
     // Timestamp-based x: each point placed at its real age so the horizontal scale
     // stays fixed to actual time regardless of poll interval.
     const pxPerSec = PLOT_W / windowSec;  // pixels per second
-    const tsBase = timestamps.length - n; // timestamps[tsBase+i] is the clock for data[i]
-    // Anchor the right edge to the newest sample's timestamp (not wall-clock now) so
-    // the latest point lands exactly on the right inner edge with no trailing gap.
-    const refMs = timestamps.length ? timestamps[timestamps.length - 1] : nowMs;
     const xAt = i => {
       const tsIdx = tsBase + i;
       const ageSec = (tsIdx >= 0 && tsIdx < timestamps.length)
