@@ -1,5 +1,5 @@
 [Unit]
-Description=Server Vitals — local health + stats HTTP endpoint (/health, /stats)
+Description=Server Vitals — local health + stats HTTP endpoint (/health, /stats, /logs)
 After=network.target
 
 [Service]
@@ -16,6 +16,15 @@ PrivateTmp=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
+# The access-log panel reads the web server's log. These state the intent and
+# keep the paths readable under ProtectSystem=strict; they do not by themselves
+# grant access — the logs are typically mode 0640 and owned by the web server, so
+# the service user still needs an ACL. The leading `-` makes a path that doesn't
+# exist a no-op, so listing all three is harmless. Add your own if you configure
+# a provider elsewhere. See "Access logs" in the README.
+ReadOnlyPaths=-/var/log/caddy
+ReadOnlyPaths=-/var/log/nginx
+ReadOnlyPaths=-/var/log/apache2
 
 [Install]
 WantedBy=multi-user.target

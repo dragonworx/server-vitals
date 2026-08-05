@@ -32,11 +32,26 @@ just opened straight in a browser with no proxy at all.
 | `/health`      | JSON: cpu, memory, disk, load average, uptime, overall `ok/degraded`    |
 | `/stats`       | HTML live dashboard (polls `/stats?format=json`)                        |
 | `/stats?format=json` | JSON sample: cpu %, **per-core cpu %**, memory, disk             |
+| `/logs?since=<seq>`  | JSON: access-log entries newer than `<seq>` (see below)           |
+| `/logs?detail=<seq>` | JSON: the full original log record for one entry                  |
+| `/logs/servers`      | JSON: hostnames the web server is configured to serve             |
+| `/logs/providers`    | JSON: the access logs this agent is following                     |
+
+The three `/logs` routes take an optional `?provider=<id>` naming which log to
+read; without it they answer for the first one configured.
 
 The `/stats` dashboard is a single HTML page with no external assets. It draws
 CPU (with one mini-graph per core, auto-detected), memory, and disk as live
 SVG sparklines. Poll interval (0.25s–10s) and time window (1–60 min) are
 selectable from the header and persisted in `localStorage`.
+
+Beside the graphs sits a resizable **access-log panel** — drag the splitter, or
+collapse it with the `logs` button in the header. It filters by server, searches
+with live highlighting, and expands any row to the full record. Entries read
+newest-first; the `↑`/`↓` button in the panel header flips the order, and the
+choice is remembered. Caddy, nginx and
+Apache are supported; configure more than one and the panel grows a dropdown to
+switch between them. See [Access logs](#access-logs).
 
 ## Requirements
 
@@ -136,10 +151,178 @@ example.com {
     # ...
     reverse_proxy /health 127.0.0.1:9999
     reverse_proxy /stats 127.0.0.1:9999
+    reverse_proxy /ping 127.0.0.1:9999
+    # Only needed for the access-log panel; see "Access logs" below.
+    reverse_proxy /logs 127.0.0.1:9999
+    reverse_proxy /logs/* 127.0.0.1:9999
 }
 ```
 
 Then `sudo caddy validate && sudo systemctl reload caddy`.
+
+## Access logs
+
+The dashboard's right-hand panel live-tails a web server's access log. It is
+optional: with no readable log the panel simply says so and the rest of the
+dashboard is unaffected.
+
+Which logs it follows is the `LOG_PROVIDERS` list at the top of
+`server-vitals.py`. A *provider* is the small adapter that knows one server's log
+format and how to enumerate its sites:
+
+| `type`     | Reads                             | Default path                   |
+| ---------- | --------------------------------- | ------------------------------ |
+| `caddy`    | Caddy's JSON access log           | `/var/log/caddy/access.log`    |
+| `nginx`    | NCSA combined                     | `/var/log/nginx/access.log`    |
+| `apache`   | NCSA combined                     | `/var/log/apache2/access.log`  |
+| `combined` | NCSA combined, no config discovery | —                             |
+
+```python
+LOG_PROVIDERS = [
+    {"type": "caddy", "path": "/var/log/caddy/access.log"},
+    {"type": "nginx", "path": "/var/log/nginx/access.log", "label": "nginx"},
+]
+```
+
+`type` is the only required key. `path`, `label` and `id` override that
+provider's defaults; `nginx` and `apache` also take `conf_dir` (where to look for
+declared server names). One provider is the ordinary case and the panel looks
+exactly as before; list several and it grows a dropdown to switch between them,
+opening on the first. Each keeps its own buffer, its own cursor and its own
+remembered site filter. Run `make deploy` after changing the list.
+
+To add a provider **without** editing a file that the next `make deploy`
+overwrites, put the same list in `/etc/server-vitals/providers.json` — it
+replaces `LOG_PROVIDERS` outright when present, and a malformed file is reported
+to the journal and ignored rather than taken as fatal:
+
+```json
+{ "providers": [ { "type": "caddy" }, { "type": "nginx" } ] }
+```
+
+Supporting another server means subclassing `LogProvider` and implementing one
+method, `parse(text)`, which turns a line into the row the panel streams. Two
+optional methods cover the rest: `detail(text)` for the expanded view, and
+`discover_servers(observed)` for the site dropdown. Add the class to
+`PROVIDER_TYPES` and it becomes a valid `type`. Everything else — following the
+file across rotations, the ring buffer, the cursor protocol, the endpoints and
+the panel — is shared and needs no changes.
+
+### nginx and Apache
+
+Both write NCSA combined by default, which carries less than Caddy's JSON: the
+timestamp has one-second resolution, and there is **no host and no duration**.
+Two common additions are picked up automatically if you configure them — a
+leading vhost field, and a `rt=<seconds>` token after the user-agent. Without a
+vhost field every row reports an empty host, and the site dropdown can only offer
+what the config declares, so log the vhost if several sites share one file:
+
+```nginx
+log_format vhost '$host $remote_addr - $remote_user [$time_local] '
+                 '"$request" $status $body_bytes_sent '
+                 '"$http_referer" "$http_user_agent" rt=$request_time';
+access_log /var/log/nginx/access.log vhost;
+```
+
+Apache ships this as `vhost_combined` (its leading `%v:%p` is understood as-is):
+
+```apache
+CustomLog /var/log/apache2/access.log vhost_combined
+```
+
+The site dropdown reads `server_name` (nginx) or `ServerName`/`ServerAlias`
+(Apache) out of the config tree, so sites with no traffic yet still appear.
+Commented-out entries are skipped. If the config isn't readable the dropdown
+falls back to the hosts seen in the log.
+
+If the panel shows *"N lines did not match the … log format"*, the file isn't in
+the format that provider parses — the usual cause is pointing `nginx` at a JSON
+log, or vice versa.
+
+### 1. Make Caddy write a JSON access log
+
+Access logging in Caddy is **per-site** — there is no global switch, so every
+site block needs it or it silently logs nothing. A shared snippet is the easiest
+way to avoid missing one:
+
+```caddy
+(accesslog) {
+    log {
+        output file /var/log/caddy/access.log {
+            roll_size 50MiB
+            roll_keep 10
+            mode 0640
+        }
+        format json
+    }
+}
+
+example.com {
+    import accesslog
+    # ...
+}
+```
+
+Leave `ts` at its default float-epoch format; the panel parses it as a number.
+
+### 2. Let the service read it
+
+Caddy's log is typically `caddy:caddy` mode `0640`, and Server Vitals runs as
+`www-data`, so it cannot read the file by default. Grant read access with a
+POSIX ACL — the narrowest option, and the default ACL means Caddy's rotated
+files inherit it:
+
+```bash
+sudo setfacl -m  u:www-data:r-x /var/log/caddy
+sudo setfacl -m  u:www-data:r-- /var/log/caddy/access.log
+sudo setfacl -d -m u:www-data:r-- /var/log/caddy   # rolled files inherit
+sudo -u www-data head -c 200 /var/log/caddy/access.log   # verify
+```
+
+If adding an ACL raises the file's mask (`getfacl` shows `mask::rwx`), put it
+back with `sudo setfacl -m m::r-- /var/log/caddy/access.log` so the grant stays
+read-only.
+
+The unit already carries `ReadOnlyPaths=-/var/log/caddy`, which states the intent
+and keeps the path readable under `ProtectSystem=strict` — but it grants nothing
+on its own; the ACL above is what actually permits the read.
+
+### 3. Stop the panel logging itself
+
+The panel polls `/logs` sub-second. Without a `log_skip` it records its own
+polling and feeds on itself, so add one — plus any other high-frequency probe
+that would otherwise drown the log:
+
+```caddy
+@statslogs {
+    host stats.example.com
+    path /logs /logs/*
+}
+log_skip @statslogs
+```
+
+Check with `caddy adapt --config /etc/caddy/Caddyfile`, then
+`sudo systemctl reload caddy`. (Don't run `caddy validate` as a user who can't
+read the access log — validate provisions the config and will fail on it.)
+
+### How it stays cheap
+
+The panel is polled several times a second, so `/logs` is a **cursor stream**:
+the client sends the highest sequence number it has seen and receives only what
+arrived since. A poll against a quiet server is under 80 bytes. Streamed rows
+are a compact projection (~150 bytes); the full ~1.3 KB record is fetched only
+when you click a row. Polling stops entirely while the tab is backgrounded, the
+panel is collapsed, or the dashboard is paused.
+
+The server keeps the most recent 2000 entries per provider in memory (about 4 MB
+each) and follows log rotation by inode, so a roll doesn't stall the stream. If a
+client falls far enough behind that entries were evicted, the panel marks the
+discontinuity rather than silently closing the hole. Each provider gets one
+background thread; only the selected one is ever polled by a browser.
+
+For Caddy the site dropdown comes from the admin API (`127.0.0.1:2019`,
+read-only, loopback), falling back to the hosts actually seen in the log if it is
+unavailable. The admin API is never proxied — it also accepts `POST /load`.
 
 ## Security
 
@@ -147,6 +330,14 @@ The endpoints have **no built-in authentication** — they expose host CPU,
 memory, disk, load, and uptime, which is reconnaissance-grade information. The
 server only binds `127.0.0.1`, so it is not reachable from outside the box until
 *you* reverse-proxy it. When you do, restrict access at the proxy:
+
+> **The access-log panel raises the stakes.** With `/logs` enabled the dashboard
+> serves visitor IP addresses, request paths, referrers and user-agents for
+> *every* site each configured provider covers — not just host metrics. An unprotected
+> `/stats` therefore publishes other people's traffic data to anyone who finds
+> the hostname. Gate it (`basic_auth`, an `@allowed` matcher, or a VPN-only
+> listener) before exposing it, or leave the access log unreadable to the service
+> user so the panel stays dark.
 
 - The shipped [`nginx/server-vitals.conf`](nginx/server-vitals.conf) snippet is
   locked to `allow 127.0.0.1; deny all;` by default — widen the allowlist to your
@@ -260,6 +451,10 @@ Knobs live at the top of `server-vitals.py`:
 - `SAMPLE_INTERVAL` — seconds between background CPU samples (default `0.25`)
 - `REQUEST_TIMEOUT` — seconds before an idle/slow client connection is dropped
   (default `5`)
+- `LOG_PROVIDERS` — which access logs the panel follows; see
+  [Access logs](#access-logs). `LOG_PROVIDERS_FILE` points at an optional JSON
+  override so a host can change this without editing the script.
+- `LOG_RING_SIZE` — entries buffered in memory per provider (default `2000`)
 
 After editing, run `make deploy` to push the new code and restart (or
 `make restart` if you only need to bounce the running service).
